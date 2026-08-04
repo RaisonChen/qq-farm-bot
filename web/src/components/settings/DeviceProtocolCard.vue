@@ -64,9 +64,9 @@ const selectedPreset = defineModel<string | number>('selectedPreset', { required
 
       <BaseInput
         v-model="form.userAgent"
-        label="协议头 (User-Agent)"
+        label="协议头 (User-Agent，可留空)"
         type="text"
-        placeholder="自定义 User-Agent"
+        placeholder="手机 QQ 预设留空，不发送此请求头"
       />
 
       <div class="grid grid-cols-1 gap-3 md:grid-cols-2">

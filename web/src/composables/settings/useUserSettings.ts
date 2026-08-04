@@ -28,6 +28,24 @@ const DEFAULT_DEVICE_PROTOCOL: DeviceProtocolConfig = {
 
 const DEVICE_PROTOCOL_PRESETS = [
   {
+    label: 'iPhone 17',
+    value: 'iphone_17',
+    config: {
+      userAgent: '',
+      deviceBrand: 'Apple',
+      deviceModel: 'iPhone 17',
+    },
+  },
+  {
+    label: 'iPhone 17 Pro',
+    value: 'iphone_17_pro',
+    config: {
+      userAgent: '',
+      deviceBrand: 'Apple',
+      deviceModel: 'iPhone 17 Pro',
+    },
+  },
+  {
     label: 'iPhone 15 Pro Max',
     value: 'iphone_15_pm',
     config: {
@@ -170,21 +188,31 @@ export function useUserSettings(showAlert: (message: string, type?: AlertType) =
 
   function randomDigits(length: number) {
     let result = ''
-    for (let i = 0; i < length; i++)
-      result += Math.floor(Math.random() * 10)
+    while (result.length < length) {
+      const bytes = crypto.getRandomValues(new Uint8Array(length - result.length))
+      for (const byte of bytes) {
+        // Discard the upper six values so modulo 10 remains unbiased.
+        if (byte < 250)
+          result += String(byte % 10)
+      }
+    }
     return result
   }
 
-  function randomHexPair() {
-    return Math.floor(Math.random() * 256).toString(16).padStart(2, '0').toUpperCase()
+  function formatHexByte(value: number) {
+    return value.toString(16).padStart(2, '0').toUpperCase()
   }
 
   function generateRandomMac() {
-    return Array.from({ length: 6 }).fill(randomHexPair()).join(':')
+    const bytes = crypto.getRandomValues(new Uint8Array(6))
+    // Locally administered (bit 1), unicast (bit 0 cleared): no real vendor OUI.
+    bytes[0] = ((bytes[0] ?? 0) & 0xFC) | 0x02
+    return Array.from(bytes, formatHexByte).join(':')
   }
 
   function generateRandomDeviceId() {
-    return Array.from({ length: 16 }).fill(Math.floor(Math.random() * 16).toString(16)).join('').toUpperCase()
+    const bytes = crypto.getRandomValues(new Uint8Array(8))
+    return Array.from(bytes, formatHexByte).join('')
   }
 
   function generateRandomImei() {

@@ -55,14 +55,17 @@ function logAce(level, message) {
 }
 
 function createTsdkRuntime(deviceProtocol) {
+    const customDevice = deviceProtocol && deviceProtocol.enabled ? deviceProtocol : null;
     return new TsdkRuntime({
         accountId: process.env.FARM_ACCOUNT_ID,
         gameId: CONFIG.tsdkGameId,
         appKey: CONFIG.tsdkAppKey,
         deviceInfo: {
-            deviceModel: deviceProtocol && deviceProtocol.deviceModel,
-            deviceBrand: deviceProtocol && deviceProtocol.deviceBrand,
-            deviceId: deviceProtocol && deviceProtocol.deviceId,
+            deviceModel: customDevice && customDevice.deviceModel,
+            deviceBrand: customDevice && customDevice.deviceBrand,
+            deviceId: customDevice && customDevice.deviceId,
+            deviceMac: customDevice && customDevice.deviceMac,
+            imei: customDevice && customDevice.imei,
             platform: CONFIG.os,
         },
         logger: logAce,
@@ -508,17 +511,38 @@ function handleNotify(msg) {
 }
 
 // ============ 登录 ============
-async function sendLogin(onLoginSuccess) {
-    const body = types.LoginRequest.encode(types.LoginRequest.create({
-        sharer_id: toLong(0),
-        sharer_open_id: '',
-        device_info: {
+function buildLoginDeviceInfo(deviceProtocol) {
+    const customDevice = deviceProtocol && deviceProtocol.enabled ? deviceProtocol : null;
+    if (!customDevice) {
+        return {
             client_version: CONFIG.clientVersion,
             sys_software: 'iOS 26.2.1',
             network: 'wifi',
             memory: '7672',
             device_id: 'iPhone X<iPhone18,3>',
-        },
+        };
+    }
+
+    const brand = String(customDevice.deviceBrand || '').trim();
+    const model = String(customDevice.deviceModel || '').trim();
+    const deviceId = String(customDevice.deviceId || '').trim();
+    const imei = String(customDevice.imei || '').trim();
+    const mac = String(customDevice.deviceMac || '').trim();
+    return {
+        client_version: CONFIG.clientVersion,
+        sys_software: /android/i.test(customDevice.userAgent || '') ? 'Android' : CONFIG.os,
+        sys_hardware: [brand, model].filter(Boolean).join(' '),
+        network: 'wifi',
+        memory: '7672',
+        device_id: deviceId || mac || imei || [brand, model].filter(Boolean).join(' '),
+    };
+}
+
+async function sendLogin(onLoginSuccess, deviceProtocol) {
+    const body = types.LoginRequest.encode(types.LoginRequest.create({
+        sharer_id: toLong(0),
+        sharer_open_id: '',
+        device_info: buildLoginDeviceInfo(deviceProtocol),
         share_cfg_id: toLong(0),
         scene_id: '1256',
         report_data: {
@@ -646,7 +670,18 @@ let savedCode = null;
 let reconnectAttempts = 0;
 let networkStopped = false;
 
-const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI MiniProgramEnv/Windows WindowsWechat/WMPF WindowsWechat(0x63090a13)';
+function buildWebSocketHeaders(deviceProtocol) {
+    const resourceVersion = String(CONFIG.clientVersion || '').split('_')[0];
+    const headers = {
+        'Origin': 'https://gate-obt.nqf.qq.com',
+        'Referer': `https://appservice.qq.com/1112386029/${resourceVersion}/page-frame.html`,
+    };
+    const userAgent = deviceProtocol && deviceProtocol.enabled
+        ? String(deviceProtocol.userAgent || '').trim()
+        : '';
+    if (userAgent) headers['User-Agent'] = userAgent;
+    return headers;
+}
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 2000;
@@ -697,14 +732,10 @@ function connect(code, onLoginSuccess) {
     closeCurrentWs({ terminate: true });
 
     // 获取设备协议配置
-    let userAgent = DEFAULT_USER_AGENT;
     let deviceProtocol = null;
     try {
         const store = getStoreModule();
-        deviceProtocol = store.getDeviceProtocol();
-        if (deviceProtocol && deviceProtocol.enabled && deviceProtocol.userAgent) {
-            userAgent = deviceProtocol.userAgent;
-        }
+        deviceProtocol = store.getDeviceProtocolForAccount(process.env.FARM_ACCOUNT_ID);
     // eslint-disable-next-line unused-imports/no-unused-vars
     } catch (e) {
         log('system', `failed to load device protocol config: ${e.message}`, {
@@ -723,17 +754,15 @@ function connect(code, onLoginSuccess) {
             `设备ID: ${deviceProtocol.deviceId || '未设置'}`,
             `IMEI: ${deviceProtocol.imei || '未设置'}`,
         ].join(' | ');
-        log('系统', `使用自定义设备协议登录\n${deviceInfo}\nUA: ${userAgent.substring(0, 100)}...`, {
+        const userAgent = String(deviceProtocol.userAgent || '').trim();
+        log('系统', `使用自定义设备协议登录\n${deviceInfo}\nUA: ${userAgent ? `${userAgent.substring(0, 100)}...` : '不发送'}`, {
             module: 'network',
             event: '设备协议',
         });
     }
 
     const socket = new WebSocket(url, {
-        headers: {
-            'User-Agent': userAgent,
-            'Origin': 'https://gate-obt.nqf.qq.com',
-        },
+        headers: buildWebSocketHeaders(deviceProtocol),
     });
     ws = socket;
 
@@ -743,7 +772,7 @@ function connect(code, onLoginSuccess) {
         reconnectAttempts = 0;
         try {
             await startSecurityRuntime(deviceProtocol);
-            await sendLogin(onLoginSuccess);
+            await sendLogin(onLoginSuccess, deviceProtocol);
         } catch (error) {
             logWarn('ACE', `安全运行时启动失败，已中止登录：${error.message}`);
             networkEvents.emit('security_error', { message: error.message });
@@ -818,5 +847,7 @@ module.exports = {
     getUserState,
     getWsErrorState,
     getAceStatus,
+    buildLoginDeviceInfo,
+    buildWebSocketHeaders,
     networkEvents,
 };

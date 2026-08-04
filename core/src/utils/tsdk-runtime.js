@@ -178,7 +178,10 @@ class TsdkRuntime {
             const platform = runtime.deviceInfo.platform || process.platform;
             const system = runtime.deviceInfo.system || os.release();
             const brand = runtime.deviceInfo.deviceBrand || 'Node.js';
-            return `${model};${platform};${system};${brand};`;
+            const deviceId = runtime.deviceInfo.deviceId || '';
+            const deviceMac = runtime.deviceInfo.deviceMac || '';
+            const imei = runtime.deviceInfo.imei || '';
+            return `${model};${platform};${system};${brand};${deviceId};${deviceMac};${imei};`;
         };
         const stringProvider = value => (ptr, capacity) => runtime.writeCString(value(), ptr, capacity);
 

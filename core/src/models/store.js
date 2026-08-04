@@ -886,7 +886,7 @@ function loadGlobalConfig() {
         if (data.deviceProtocol && typeof data.deviceProtocol === 'object') {
             globalConfig.deviceProtocol = {
                 enabled: data.deviceProtocol.enabled === true,
-                userAgent: String(data.deviceProtocol.userAgent || DEFAULT_DEVICE_PROTOCOL.userAgent).trim(),
+                userAgent: normalizeDeviceUserAgent(data.deviceProtocol.userAgent),
                 deviceModel: String(data.deviceProtocol.deviceModel || DEFAULT_DEVICE_PROTOCOL.deviceModel).trim(),
                 deviceBrand: String(data.deviceProtocol.deviceBrand || DEFAULT_DEVICE_PROTOCOL.deviceBrand).trim(),
                 deviceMac: String(data.deviceProtocol.deviceMac || '').trim(),
@@ -902,7 +902,7 @@ function loadGlobalConfig() {
                 if (key && val) {
                     globalConfig.userDeviceProtocols[key] = {
                         enabled: val.enabled === true,
-                        userAgent: String(val.userAgent || DEFAULT_DEVICE_PROTOCOL.userAgent).trim(),
+                        userAgent: normalizeDeviceUserAgent(val.userAgent),
                         deviceModel: String(val.deviceModel || DEFAULT_DEVICE_PROTOCOL.deviceModel).trim(),
                         deviceBrand: String(val.deviceBrand || DEFAULT_DEVICE_PROTOCOL.deviceBrand).trim(),
                         deviceMac: String(val.deviceMac || '').trim(),
@@ -975,7 +975,7 @@ function sanitizeGlobalConfigBeforeSave() {
         if (!id) continue;
         cleanProtocols[id] = {
             enabled: val.enabled === true,
-            userAgent: String(val.userAgent || DEFAULT_DEVICE_PROTOCOL.userAgent).trim(),
+            userAgent: normalizeDeviceUserAgent(val.userAgent),
             deviceModel: String(val.deviceModel || DEFAULT_DEVICE_PROTOCOL.deviceModel).trim(),
             deviceBrand: String(val.deviceBrand || DEFAULT_DEVICE_PROTOCOL.deviceBrand).trim(),
             deviceMac: String(val.deviceMac || '').trim(),
@@ -1717,6 +1717,12 @@ const DEFAULT_DEVICE_PROTOCOL = {
     imei: ''
 };
 
+function normalizeDeviceUserAgent(value) {
+    return value === undefined || value === null
+        ? DEFAULT_DEVICE_PROTOCOL.userAgent
+        : String(value).trim();
+}
+
 function getDeviceProtocol() {
     return globalConfig.deviceProtocol
         ? { ...globalConfig.deviceProtocol }
@@ -1727,7 +1733,7 @@ function setDeviceProtocol(config) {
     if (!config || typeof config !== 'object') return null;
     globalConfig.deviceProtocol = {
         enabled: config.enabled === true,
-        userAgent: String(config.userAgent || DEFAULT_DEVICE_PROTOCOL.userAgent).trim(),
+        userAgent: normalizeDeviceUserAgent(config.userAgent),
         deviceModel: String(config.deviceModel || DEFAULT_DEVICE_PROTOCOL.deviceModel).trim(),
         deviceBrand: String(config.deviceBrand || DEFAULT_DEVICE_PROTOCOL.deviceBrand).trim(),
         deviceMac: String(config.deviceMac || '').trim(),
@@ -1745,12 +1751,25 @@ function getUserDeviceProtocol(username) {
     return { ...DEFAULT_DEVICE_PROTOCOL };
 }
 
+function getDeviceProtocolForAccount(accountId) {
+    const id = String(accountId || '').trim();
+    if (id) {
+        const account = loadAccounts().accounts.find(item => String(item.id || '') === id);
+        const username = account && String(account.username || '').trim();
+        if (username && globalConfig.userDeviceProtocols && globalConfig.userDeviceProtocols[username]) {
+            return getUserDeviceProtocol(username);
+        }
+    }
+    // Keep the legacy global value as a migration fallback for older installations.
+    return getDeviceProtocol();
+}
+
 function setUserDeviceProtocol(config, username) {
     if (!username) return { ...DEFAULT_DEVICE_PROTOCOL };
     if (!globalConfig.userDeviceProtocols) globalConfig.userDeviceProtocols = {};
     globalConfig.userDeviceProtocols[username] = {
         enabled: config.enabled === true,
-        userAgent: String(config.userAgent || DEFAULT_DEVICE_PROTOCOL.userAgent).trim(),
+        userAgent: normalizeDeviceUserAgent(config.userAgent),
         deviceModel: String(config.deviceModel || DEFAULT_DEVICE_PROTOCOL.deviceModel).trim(),
         deviceBrand: String(config.deviceBrand || DEFAULT_DEVICE_PROTOCOL.deviceBrand).trim(),
         deviceMac: String(config.deviceMac || '').trim(),
@@ -1889,6 +1908,7 @@ module.exports = {
     setDeviceProtocol,
     DEFAULT_DEVICE_PROTOCOL,
     getUserDeviceProtocol,
+    getDeviceProtocolForAccount,
     setUserDeviceProtocol,
     deleteUserDeviceProtocol,
     readFriendDogInfoCache,
