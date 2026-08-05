@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { filterInvalidPlants, isInvalidPlant, isInvalidSeedId } = require('./invalidPlants');
 const { getResourcePath } = require('./runtime-paths');
 
 // 等级经验配置
@@ -54,7 +55,7 @@ function loadConfigs() {
     try {
         const plantPath = path.join(basePath, 'Plant.json');
         if (fs.existsSync(plantPath)) {
-            plantConfig = JSON.parse(fs.readFileSync(plantPath, 'utf8'));
+            plantConfig = filterInvalidPlants(JSON.parse(fs.readFileSync(plantPath, 'utf8')));
             plantMap.clear();
             seedToPlant.clear();
             fruitToPlant.clear();
@@ -72,6 +73,7 @@ function loadConfigs() {
         if (fs.existsSync(eventPlantPath)) {
             const eventPlants = JSON.parse(fs.readFileSync(eventPlantPath, 'utf8'));
             for (const entry of eventPlants) {
+                if (isInvalidPlant(entry)) continue;
                 const existing = plantMap.get(Number(entry.id));
                 const plant = {
                     ...(existing || {}),
@@ -109,7 +111,7 @@ function loadConfigs() {
             seedItemMap.clear();
             for (const item of itemInfoConfig) {
                 const itemId = Number(item && item.id) || 0;
-                if (itemId <= 0) continue;
+                if (itemId <= 0 || isInvalidSeedId(itemId)) continue;
                 itemInfoMap.set(itemId, item);
                 // type === 5 表示种子物品
                 if (Number(item.type) === 5) {
@@ -123,6 +125,7 @@ function loadConfigs() {
         if (fs.existsSync(eventPlantPath)) {
             const eventPlants = JSON.parse(fs.readFileSync(eventPlantPath, 'utf8'));
             for (const entry of eventPlants) {
+                if (isInvalidPlant(entry)) continue;
                 const seedId = Number(entry.seed_id);
                 const fruitId = Number(entry.fruit_id);
                 const baseItem = {

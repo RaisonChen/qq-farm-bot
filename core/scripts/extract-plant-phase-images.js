@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { filterInvalidPlants } = require('../src/config/invalidPlants');
 
 const APP_ID = '1112386029';
 const ASTCENC_VERSION = '5.5.0';
@@ -140,7 +141,7 @@ function resolveAstcenc(args) {
 function getAssets(args) {
   if (args.assets.length) return [...new Set(args.assets)];
   if (args.all) {
-    const plants = JSON.parse(fs.readFileSync(path.join(coreRoot, 'src', 'gameConfig', 'Plant.json'), 'utf8'));
+    const plants = filterInvalidPlants(JSON.parse(fs.readFileSync(path.join(coreRoot, 'src', 'gameConfig', 'Plant.json'), 'utf8')));
     const assets = plants
       .map(plant => Number(plant.seed_id) - 20000)
       .filter(id => id > 0)
@@ -380,10 +381,10 @@ function extractAtlasRegion(texturePath, region, outputPath) {
 }
 
 function exportCachedSpinePlants(entries, output, manifest, wantedAssets) {
-  const plants = [
+  const plants = filterInvalidPlants([
     ...JSON.parse(fs.readFileSync(path.join(coreRoot, 'src', 'gameConfig', 'Plant.json'), 'utf8')),
     ...JSON.parse(fs.readFileSync(path.join(coreRoot, 'src', 'gameConfig', 'EventPlants.json'), 'utf8')),
-  ];
+  ]);
   const plantsById = new Map(plants.filter(plant => Number(plant.size) === 2).map(plant => [Number(plant.id), plant]));
   let exported = 0;
   for (const spineImport of findSpineImports(entries)) {
@@ -463,10 +464,10 @@ function main() {
   for (const asset of assets) delete manifest[asset];
   const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-farm-plant-download.'));
   if (args.downloadMissing) {
-    const allPlants = [
+    const allPlants = filterInvalidPlants([
       ...JSON.parse(fs.readFileSync(path.join(coreRoot, 'src', 'gameConfig', 'Plant.json'), 'utf8')),
       ...JSON.parse(fs.readFileSync(path.join(coreRoot, 'src', 'gameConfig', 'EventPlants.json'), 'utf8')),
-    ].filter(plant => Number(plant.size) === 2 && plant.all_state_spine);
+    ]).filter(plant => Number(plant.size) === 2 && plant.all_state_spine);
     addDownloadedSpineEntries(entries, findLatestMainsceneConfig(entries), allPlants, new Set(assets), downloadDir);
   }
   let exported = 0;
