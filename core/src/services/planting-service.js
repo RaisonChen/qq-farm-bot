@@ -22,6 +22,9 @@ let reserved2x2GroupKeys = [];
 let last2x2WaitingSignature = '';
 const failed2x2Retries = new Map();
 const TWO_BY_TWO_RETRY_DELAY_MS = 30_000;
+// 同一批种下的普通作物会因请求间隔产生少量成熟时间偏差。
+// 这类偏差不应让 2x2 预留区向后排漂移；一分钟内视为同时清空。
+const TWO_BY_TWO_CLEAR_TIME_TOLERANCE_SEC = 60;
 
 // ─── 种植策略标签 ───
 
@@ -198,7 +201,9 @@ function select2x2Reservations(groups, emptyLandIds, desiredCount, lands) {
       if (reservedA !== reservedB) return reservedB - reservedA;
       const clearAtA = Math.max(...a.landIds.map(id => getEstimatedLandClearAt(landMap.get(id), emptySet)));
       const clearAtB = Math.max(...b.landIds.map(id => getEstimatedLandClearAt(landMap.get(id), emptySet)));
-      if (clearAtA !== clearAtB) return clearAtA - clearAtB;
+      if (Math.abs(clearAtA - clearAtB) > TWO_BY_TWO_CLEAR_TIME_TOLERANCE_SEC) {
+        return clearAtA - clearAtB;
+      }
       return a.masterLandId - b.masterLandId;
     });
 

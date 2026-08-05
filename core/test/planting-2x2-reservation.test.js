@@ -74,6 +74,44 @@ test('prefers a 2x2 group with three empty lands over an earlier but less-cleare
   assert.deepEqual(selected.map(group => group.key), [almostReady.key]);
 });
 
+test('prefers the earlier land group when adjacent groups clear at nearly the same time', () => {
+  select2x2Reservations([], [], 0, []);
+  const upper = { key: '3-4-7-8', masterLandId: 7, landIds: [7, 8, 3, 4] };
+  const lower = { key: '7-8-11-12', masterLandId: 11, landIds: [11, 12, 7, 8] };
+  const now = Math.floor(Date.now() / 1000);
+  const lands = [
+    growingLand(3, now + 106),
+    growingLand(4, now + 106),
+    growingLand(7, now + 100),
+    growingLand(8, now + 100),
+    growingLand(11, now + 100),
+    growingLand(12, now + 100),
+  ];
+
+  const selected = select2x2Reservations([lower, upper], [], 1, lands);
+
+  assert.deepEqual(selected.map(group => group.key), [upper.key]);
+});
+
+test('still prefers a materially earlier clearing group over the earlier land ids', () => {
+  select2x2Reservations([], [], 0, []);
+  const upper = { key: '3-4-7-8', masterLandId: 7, landIds: [7, 8, 3, 4] };
+  const lower = { key: '7-8-11-12', masterLandId: 11, landIds: [11, 12, 7, 8] };
+  const now = Math.floor(Date.now() / 1000);
+  const lands = [
+    growingLand(3, now + 200),
+    growingLand(4, now + 200),
+    growingLand(7, now + 100),
+    growingLand(8, now + 100),
+    growingLand(11, now + 100),
+    growingLand(12, now + 100),
+  ];
+
+  const selected = select2x2Reservations([upper, lower], [], 1, lands);
+
+  assert.deepEqual(selected.map(group => group.key), [lower.key]);
+});
+
 test('a nearly cleared group supersedes an older reservation with less clearing progress', () => {
   const oldReservation = { key: '1-2-5-6', masterLandId: 5, landIds: [5, 6, 1, 2] };
   const almostReady = { key: '9-10-13-14', masterLandId: 13, landIds: [13, 14, 9, 10] };
