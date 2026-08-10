@@ -100,10 +100,42 @@ async function captureRequest(config, path, options = {}) {
     return data;
   } catch (error) {
     if (error && error.name === "AbortError") throw new Error("抓包服务请求超时");
+    // node-fetch 的网络层错误（socket hang up / ECONNREFUSED / ENOTFOUND 等）原始信息里
+    // 会带上抓包服务的完整地址，这里统一转成中文提示，避免把内网地址/端口暴露给前端。
+    if (isCaptureNetworkError(error)) {
+      throw new Error("无法连接抓包服务，请确认抓包服务已启动且地址配置正确");
+    }
     throw error;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+// 判断是否为“连不上抓包服务”类的网络错误（区别于业务错误，业务错误已是中文且不含地址）。
+function isCaptureNetworkError(error) {
+  if (!error) return false;
+  // node-fetch 抛出的 FetchError：type 为 system 表示底层网络错误。
+  if (error.name === "FetchError" || error.type === "system") return true;
+  const code = String(error.code || error.errno || "").toUpperCase();
+  const NETWORK_CODES = new Set([
+    "ECONNRESET", // socket hang up
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ETIMEDOUT",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "EPIPE",
+    "UND_ERR_SOCKET",
+    "UND_ERR_CONNECT_TIMEOUT",
+  ]);
+  if (NETWORK_CODES.has(code)) return true;
+  // 兜底：按报文特征识别（例如 undici/node-fetch 的 "socket hang up" / "fetch failed"）。
+  const message = String(error.message || "").toLowerCase();
+  return message.includes("socket hang up")
+    || message.includes("fetch failed")
+    || message.includes("network")
+    || /request to https?:\/\//.test(message);
 }
 
 function getFlowOwner(user) {
@@ -825,6 +857,7 @@ module.exports = {
   collectQqFriendGids,
   findDuplicateCapturedAccount,
   getCaptureBypassHosts,
+  isCaptureNetworkError,
   isCertificateTokenValid,
   isCompleteQqFriendSource,
   mergeKnownFriendGids,

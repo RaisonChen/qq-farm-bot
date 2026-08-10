@@ -6,6 +6,7 @@ const {
   collectQqFriendGids,
   findDuplicateCapturedAccount,
   getCaptureBypassHosts,
+  isCaptureNetworkError,
   isCertificateTokenValid,
   isCompleteQqFriendSource,
   mergeKnownFriendGids,
@@ -18,6 +19,23 @@ test('normalizeApiBase accepts http(s) and removes trailing slashes', () => {
   assert.equal(normalizeApiBase('https://capture.example.com/base/'), 'https://capture.example.com/base');
   assert.throws(() => normalizeApiBase('file:///tmp/capture'), /仅支持/);
   assert.throws(() => normalizeApiBase('https://user:pass@example.com'), /仅支持/);
+});
+
+test('capture network errors are detected so raw URLs never leak to clients', () => {
+  // node-fetch 连不上抓包服务时的典型报错，原文会带上完整地址，必须被识别并改成中文。
+  const socketHangUp = Object.assign(
+    new Error('request to http://574530266.iok.la:8450/api/sessions failed, reason: socket hang up'),
+    { name: 'FetchError', type: 'system', code: 'ECONNRESET' },
+  );
+  assert.equal(isCaptureNetworkError(socketHangUp), true);
+  assert.equal(isCaptureNetworkError(Object.assign(new Error('x'), { code: 'ECONNREFUSED' })), true);
+  assert.equal(isCaptureNetworkError(Object.assign(new Error('x'), { code: 'ENOTFOUND' })), true);
+  assert.equal(isCaptureNetworkError(new Error('fetch failed')), true);
+
+  // 业务错误（已是中文、不含地址）不应被误判吞掉，需原样透传给前端。
+  assert.equal(isCaptureNetworkError(new Error('抓包服务鉴权失败')), false);
+  assert.equal(isCaptureNetworkError(new Error('抓取任务不存在或已过期')), false);
+  assert.equal(isCaptureNetworkError(null), false);
 });
 
 test('certificate links require the exact temporary flow token', () => {
