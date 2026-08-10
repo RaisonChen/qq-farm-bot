@@ -97,7 +97,7 @@
 ## 快速启动
 
 ```powershell
-git clone https://github.com/xxxscarlxrd404/qq-farm-bot.git
+git clone https://github.com/RaisonChen/qq-farm-bot.git
 cd qq-farm-bot
 
 corepack enable
