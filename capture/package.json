@@ -1,0 +1,19 @@
+{
+  "name": "qq-farm-capture-service",
+  "version": "1.0.0",
+  "description": "本地抓包服务：为 core 的「抓包登录」提供 code/gid/好友 GID 抓取（基于 mitmproxy）",
+  "license": "ISC",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "bin": {
+    "qq-farm-capture": "src/server.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
