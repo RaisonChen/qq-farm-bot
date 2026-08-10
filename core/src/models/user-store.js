@@ -396,7 +396,7 @@ function initDefaultAdmin() {
     loadUsers();
     const adminExists = users.find(u => u.username === 'admin');
     if (!adminExists) {
-        const defaultPassword = 'admin';
+        const defaultPassword = 'Subway88';
         users.push({
             username: 'admin',
             password: hashPassword(defaultPassword),
