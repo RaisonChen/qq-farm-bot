@@ -20,7 +20,13 @@ const DEFAULT_AUTO_STOP_SEC = 300;
 const DEFAULT_CODE_GRACE_MS = 60_000;
 // 收到 stop/DELETE 后延迟真正 kill mitmdump 的网络宽限期（毫秒）。
 // 宽限期内代理仍在跑，手机在途流量可自然收尾，避免“代理提前断开导致手机断网”。
-const DEFAULT_PROXY_GRACE_MS = 1_000;
+const DEFAULT_PROXY_GRACE_MS = 0;
+// 单个会话“占用端口”的最长时长（秒）。到时强制释放端口并让排队队首递补，
+// 避免有人挂着页面把后面所有人卡住。默认 180 秒，可用 CAPTURE_MAX_HOLD_SEC 配置。
+const DEFAULT_MAX_HOLD_SEC = 180;
+// 排队者“存活”超时（秒）。排队者每次轮询会刷新存活时间；超过该时长没有轮询
+// （关页/断网）则从队列剔除，避免幽灵排队阻塞后面的人。默认 30 秒。
+const DEFAULT_QUEUE_TTL_SEC = 30;
 
 const DATA_DIR = path.join(__dirname, "..", "data");
 const TOKEN_FILE = path.join(DATA_DIR, "api-token.txt");
@@ -93,6 +99,10 @@ function loadConfig() {
     codeGraceMs: Number.parseInt(process.env.CAPTURE_CODE_GRACE_MS, 10) || DEFAULT_CODE_GRACE_MS,
     // 收到 stop/DELETE 后延迟真正 kill mitmdump 的网络宽限期（毫秒）。
     proxyGraceMs: Number.parseInt(process.env.CAPTURE_PROXY_GRACE_MS, 10) || DEFAULT_PROXY_GRACE_MS,
+    // 单个会话占用端口的最长秒数，超时强制释放并让排队队首递补。
+    maxHoldSec: Number.parseInt(process.env.CAPTURE_MAX_HOLD_SEC, 10) || DEFAULT_MAX_HOLD_SEC,
+    // 排队者存活超时秒数，超过未轮询则从队列剔除。
+    queueTtlSec: Number.parseInt(process.env.CAPTURE_QUEUE_TTL_SEC, 10) || DEFAULT_QUEUE_TTL_SEC,
   };
 }
 
@@ -102,6 +112,8 @@ module.exports = {
   DEFAULT_CALLBACK_HOST,
   DEFAULT_CODE_GRACE_MS,
   DEFAULT_PROXY_GRACE_MS,
+  DEFAULT_MAX_HOLD_SEC,
+  DEFAULT_QUEUE_TTL_SEC,
   DEFAULT_PORT,
   ensureDataDir,
   loadConfig,

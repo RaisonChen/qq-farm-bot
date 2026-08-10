@@ -75,11 +75,32 @@ node src/server.js
 | `CAPTURE_HOST` | 服务监听地址 | `127.0.0.1` |
 | `CAPTURE_PORT` | 服务端口 | `8450` |
 | `CAPTURE_API_TOKEN` | 固定 API Token；不设置则自动生成并存到 `data/api-token.txt` | 自动生成 |
-| `CAPTURE_PROXY_PORTS` | mitmproxy 代理端口池（逗号分隔） | `8451,8452,8453,8454` |
+| `CAPTURE_PROXY_PORTS` | mitmproxy 代理端口池（逗号分隔）。池中有几个端口即可几人同时抓包，其余人自动排队 | `8451` |
 | `CAPTURE_PUBLIC_HOST` | 对外可达主机名/IP（供设备设置代理/装证书） | 自动探测局域网 IPv4 |
 | `CAPTURE_AUTO_STOP_SEC` | 前端展示的自动停止倒计时（秒） | `300` |
+| `CAPTURE_MAX_HOLD_SEC` | 单个会话占用端口的最长秒数，超时强制释放端口并切给排队队首 | `180` |
+| `CAPTURE_QUEUE_TTL_SEC` | 排队者存活超时（秒）；超过该时长未轮询（关页/断网）则从队列剔除 | `30` |
 | `CAPTURE_MITMDUMP_BIN` | `mitmdump` 可执行文件路径 | `mitmdump` |
 | `CAPTURE_MITM_CONFDIR` | mitmproxy 证书/配置目录 | `~/.mitmproxy` |
+
+## 排队模式
+
+代理端口是稀缺资源（默认端口池只有 1 个），因此抓包采用**先到先得 + 排队**：
+
+- **端口空闲**：`/api/capture/start` 直接分配端口并启动代理。
+- **端口占满**：请求不再报错，而是进入 FIFO 队列，响应返回排队信息
+  （`queue.queued=true` / `position` 名次 / `queueLength` 总人数）。前端会持续轮询，
+  **轮到队首且有空闲端口时自动开始抓取**，无需用户再次点击。
+- **最长占用上限**：持有端口的会话超过 `CAPTURE_MAX_HOLD_SEC`（默认 180 秒）会被
+  **强制释放**（停 mitm、回收端口），避免有人挂着页面把后面所有人卡住。
+  被强制释放时若**尚未抓到 code**，该会话会**自动重新排到队尾**继续等待——
+  用户无需关闭/重开页面，前端会从「剩余时间」自然切回「排队中」，轮到时再次自动开始；
+  已抓到 code 的会话视为完成，不再排队。
+- **幽灵排队剔除**：排队者每次轮询即心跳；超过 `CAPTURE_QUEUE_TTL_SEC`（默认 30 秒）
+  没有轮询（关页/断网）会被移出队列，不阻塞后面的人。
+
+> 想支持多人并发抓包时，把 `CAPTURE_PROXY_PORTS` 配成多个端口即可，队列会按
+> 空闲端口数并行放行。
 
 ## 对外接口（core 契约）
 
@@ -88,10 +109,10 @@ node src/server.js
 
 | 接口 | 方法 | 作用 |
 |---|---|---|
-| `/api/health` | GET | 健康检查（uptime / sessions / portPool） |
+| `/api/health` | GET | 健康检查（uptime / sessions / portPool / queueLength） |
 | `/api/sessions` | POST | 创建会话 |
-| `/api/capture/start` | POST | 启动抓取代理（body: `{ mode, bypassHosts }`） |
-| `/api/sessions/:id/state` | GET | 查询会话状态与已抓取数据 |
+| `/api/capture/start` | POST | 启动抓取代理（body: `{ mode, bypassHosts }`）；端口占满时返回 `queue` 排队信息 |
+| `/api/sessions/:id/state` | GET | 查询会话状态与已抓取数据；排队中会刷新心跳并回传排队名次 |
 | `/api/capture/stop` | POST | 停止抓取（保留会话） |
 | `/api/sessions/:id` | DELETE | 删除会话并释放代理 |
 | `/cert/mitmproxy-ca-cert.cer` | GET | 下载 mitmproxy CA 证书 |

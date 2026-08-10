@@ -177,7 +177,16 @@ class CaptureSession {
 }
 
 class SessionManager {
-  constructor({ portPool = [], autoStopSec = 0, publicHost = "127.0.0.1", persistDir = "", codeGraceMs = 60_000 } = {}) {
+  constructor({
+    portPool = [],
+    autoStopSec = 0,
+    publicHost = "127.0.0.1",
+    persistDir = "",
+    codeGraceMs = 60_000,
+    maxHoldSec = 0,
+    queueTtlSec = 0,
+    onForceRelease = null,
+  } = {}) {
     this.sessions = new Map();
     this.availablePorts = [...portPool];
     this.autoStopSec = autoStopSec;
@@ -188,6 +197,17 @@ class SessionManager {
     this.codeGraceMs = codeGraceMs;
     // sessionId -> 宽限期定时器
     this.graceTimers = new Map();
+    // ---- 端口排队 ----
+    // 单会话最长占用端口毫秒数；<=0 表示不限制（超时强制释放关闭）。
+    this.maxHoldMs = maxHoldSec > 0 ? maxHoldSec * 1000 : 0;
+    // 排队者存活超时毫秒数；<=0 表示不剔除幽灵排队。
+    this.queueTtlMs = queueTtlSec > 0 ? queueTtlSec * 1000 : 0;
+    // 强制释放回调：(sessionId, port) => void，由 server.js 注入用于 kill mitm。
+    this.onForceRelease = typeof onForceRelease === "function" ? onForceRelease : null;
+    // 当前持有端口的会话：sessionId -> { port, acquiredAt, timer }
+    this.holders = new Map();
+    // FIFO 排队队列：[{ sessionId, enqueuedAt, lastSeenAt }]
+    this.waitQueue = [];
   }
 
   // 把任意 sessionId 规整成安全的文件名，避免路径穿越 / 非法字符。
@@ -233,6 +253,11 @@ class SessionManager {
     const id = String(sessionId || "").trim();
     const session = this.sessions.get(id);
     this.clearGraceTimer(id);
+    // 会话销毁时同步清理排队/占用记录，避免留下幽灵。端口回收仍由调用方（stop/DELETE
+    // 的 scheduleStop 回调）负责，这里只清空 hold 计时器，防止超时回调对已释放端口重复操作。
+    this.clearHoldTimer(id);
+    this.holders.delete(id);
+    this.removeFromQueue(id);
     if (session) {
       session.discardPersisted();
       this.sessions.delete(id);
@@ -272,11 +297,135 @@ class SessionManager {
     return [...this.sessions.values()];
   }
 
-  acquirePort() {
-    return this.availablePorts.shift() || 0;
+  // 剔除超过存活超时未轮询的幽灵排队者（关页/断网），避免阻塞后面的人。
+  pruneQueue() {
+    if (this.queueTtlMs <= 0 || !this.waitQueue.length) return;
+    const now = Date.now();
+    this.waitQueue = this.waitQueue.filter((item) => now - item.lastSeenAt <= this.queueTtlMs);
   }
 
-  releasePort(port) {
+  // 会话是否已持有端口。
+  holdsPort(sessionId) {
+    return this.holders.has(String(sessionId || "").trim());
+  }
+
+  // 当前会话占用端口的剩余秒数（未持有或不限时返回 0）。
+  holdRemainingSec(sessionId) {
+    if (this.maxHoldMs <= 0) return 0;
+    const holder = this.holders.get(String(sessionId || "").trim());
+    if (!holder) return 0;
+    const remain = holder.acquiredAt + this.maxHoldMs - Date.now();
+    return remain > 0 ? Math.ceil(remain / 1000) : 0;
+  }
+
+  // 记录持有并启动最长占用计时器；到时强制释放端口 + 回调 kill mitm + 递补队首。
+  startHold(id, port) {
+    this.clearHoldTimer(id);
+    let timer = null;
+    if (this.maxHoldMs > 0) {
+      timer = setTimeout(() => {
+        // 超时：先回调让 server 停 mitm，再回收端口。releasePort 内部会 promote 队首。
+        if (this.onForceRelease) {
+          try {
+            this.onForceRelease(id, port);
+          } catch {}
+        }
+        this.releasePort(port, id);
+        // 占用超时但尚未抓到 code 的会话：自动重新排到队尾，让前端无需关页即可继续等待，
+        // 轮到时再次自动启动。已抓到 code 的会话视为完成，不再排队。
+        const session = this.sessions.get(id);
+        if (session && !session.hasCode()) {
+          this.enqueue(id);
+        }
+      }, this.maxHoldMs);
+      if (typeof timer.unref === "function") timer.unref();
+    }
+    this.holders.set(id, { port, acquiredAt: Date.now(), timer });
+  }
+
+  clearHoldTimer(id) {
+    const holder = this.holders.get(id);
+    if (holder && holder.timer) clearTimeout(holder.timer);
+  }
+
+  // 申请端口。返回：
+  //   { port }                              → 分配成功（并开始占用计时）。
+  //   { queued: true, position, queueLength } → 端口忙，已入队（或刷新队列存活时间）。
+  // 规则：仅当调用者位于队首（或队列为空）且有空闲端口时才分配，保证 FIFO。
+  acquirePort(sessionId) {
+    const id = String(sessionId || "").trim();
+    // 已持有端口：幂等返回原端口（重复轮询不重复占用）。
+    if (id && this.holders.has(id)) {
+      return { port: this.holders.get(id).port };
+    }
+    this.pruneQueue();
+    const head = this.waitQueue[0];
+    const isHeadOrEmpty = !head || head.sessionId === id;
+    if (this.availablePorts.length && isHeadOrEmpty) {
+      // 轮到我了：出队（如果在队列里）并分配端口。
+      if (head && head.sessionId === id) this.waitQueue.shift();
+      const port = this.availablePorts.shift();
+      if (id) this.startHold(id, port);
+      return { port };
+    }
+    // 拿不到端口 → 入队（已在队列则刷新存活时间）。
+    return this.enqueue(id);
+  }
+
+  // 将会话加入排队（或刷新其存活时间），返回排队信息。
+  enqueue(sessionId) {
+    const id = String(sessionId || "").trim();
+    this.pruneQueue();
+    const now = Date.now();
+    let entry = this.waitQueue.find((item) => item.sessionId === id);
+    if (entry) {
+      entry.lastSeenAt = now;
+    } else if (id) {
+      entry = { sessionId: id, enqueuedAt: now, lastSeenAt: now };
+      this.waitQueue.push(entry);
+    }
+    const position = id ? this.waitQueue.findIndex((item) => item.sessionId === id) + 1 : 0;
+    return { queued: true, position, queueLength: this.waitQueue.length };
+  }
+
+  // 排队者心跳：轮询时刷新存活时间并返回最新排队信息（不占用端口）。
+  refreshQueue(sessionId) {
+    const id = String(sessionId || "").trim();
+    this.pruneQueue();
+    const idx = this.waitQueue.findIndex((item) => item.sessionId === id);
+    if (idx < 0) return null;
+    this.waitQueue[idx].lastSeenAt = Date.now();
+    return { queued: true, position: idx + 1, queueLength: this.waitQueue.length };
+  }
+
+  removeFromQueue(sessionId) {
+    const id = String(sessionId || "").trim();
+    const before = this.waitQueue.length;
+    this.waitQueue = this.waitQueue.filter((item) => item.sessionId !== id);
+    return this.waitQueue.length !== before;
+  }
+
+  // 当前排队人数（供健康检查/展示）。
+  get queueLength() {
+    this.pruneQueue();
+    return this.waitQueue.length;
+  }
+
+  releasePort(port, sessionId) {
+    const id = String(sessionId || "").trim();
+    if (id) {
+      this.clearHoldTimer(id);
+      this.holders.delete(id);
+    } else {
+      // 未指定会话时，按端口反查并清理持有记录。
+      for (const [holderId, holder] of this.holders.entries()) {
+        if (holder.port === Number(port)) {
+          if (holder.timer) clearTimeout(holder.timer);
+          this.holders.delete(holderId);
+          break;
+        }
+      }
+    }
     const num = Number(port);
     if (Number.isInteger(num) && num > 0 && !this.availablePorts.includes(num)) {
       this.availablePorts.push(num);

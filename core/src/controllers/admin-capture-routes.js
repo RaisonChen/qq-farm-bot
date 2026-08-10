@@ -6,6 +6,9 @@ const CAPTURE_FLOW_TTL_MS = 15 * 60 * 1000;
 const QQ_FRIEND_COLLECTION_MAX_MS = 15_000;
 const QQ_FRIEND_COLLECTION_POLL_MS = 1500;
 const CAPTURE_ACCOUNT_START_DELAY_MS = 1500;
+// 抓包登录不再采集 QQ 好友 GID：置为 false 后 complete 流程会跳过后台好友同步，
+// 直接释放代理并启动账号。相关采集代码（collectQqFriendGids 等）保留但不再触发。
+const QQ_FRIEND_COLLECTION_ENABLED = false;
 const COMPLETE_QQ_FRIEND_SOURCES = new Set([
   "gamepb.friendpb.FriendService.GetAll",
   "gamepb.friendpb.FriendService.SyncAll",
@@ -180,11 +183,27 @@ function addCapturedValues(flow, snapshot) {
   flow.publicInfo = data.publicInfo || flow.publicInfo;
   flow.proxy = data.proxy || flow.proxy;
   flow.captureStatus = channel?.status || flow.captureStatus;
+  // 端口排队信息由 capture 端在 start/state 响应顶层返回（非 data 内），透传给前端展示。
+  if (snapshot?.queue && typeof snapshot.queue === "object") {
+    flow.queue = snapshot.queue;
+  }
   flow.updatedAt = Date.now();
 }
 
 async function refreshFlow(store, flow) {
   const config = resolveCaptureConfig(store);
+  // 若上一轮处于排队中且尚未拿到 code，则重放 start：capture 端会在轮到队首且有空闲端口时
+  // 直接分配端口并启动代理，否则刷新排队存活时间并回传最新名次。这样前端只需轮询本接口即可自动推进。
+  if (flow.queue?.queued && !flow.code) {
+    const started = await captureRequest(config, "/api/capture/start", {
+      method: "POST",
+      sessionId: flow.remoteSessionId,
+      body: flow.startBody || { mode: flow.platform, bypassHosts: [] },
+      timeout: 30_000,
+    });
+    addCapturedValues(flow, started);
+    return flow;
+  }
   const snapshot = await captureRequest(
     config,
     `/api/sessions/${encodeURIComponent(flow.remoteSessionId)}/state`,
@@ -198,6 +217,7 @@ function serializeFlow(flow) {
   const autoStopSec = Number(flow.publicInfo?.mitmProxyAutoStopSec) || 0;
   const startedAt = Date.parse(flow.proxy?.startedAt || "");
   const elapsedSec = Number.isFinite(startedAt) ? Math.floor((Date.now() - startedAt) / 1000) : 0;
+  const queue = flow.queue && typeof flow.queue === "object" ? flow.queue : null;
   return {
     id: flow.id,
     platform: flow.platform,
@@ -205,6 +225,14 @@ function serializeFlow(flow) {
     accountGid: flow.accountGid,
     friendCount: flow.friendGids.size,
     captureStatus: flow.captureStatus,
+    // 端口排队信息：queued 表示当前在排队；position 名次（1 为下一个），queueLength 总排队人数。
+    queue: {
+      queued: queue?.queued === true,
+      position: Number(queue?.position) || 0,
+      queueLength: Number(queue?.queueLength) || 0,
+      maxHoldSec: Number(queue?.maxHoldSec) || 0,
+      maxHoldRemainingSec: Number(queue?.maxHoldRemainingSec) || 0,
+    },
     proxy: {
       running: flow.proxy?.running === true,
       status: String(flow.proxy?.status || ""),
@@ -402,9 +430,14 @@ async function stopCaptureBeforeAccountStart(store, flow, start) {
   start();
 }
 
-async function removeExistingOwnerFlows(store, owner) {
+async function removeExistingOwnerFlows(store, owner, clientId) {
+  const cid = String(clientId || "").trim();
   const existing = [...captureFlows.values()].filter(
-    (flow) => flow.owner === owner && !flow.completed,
+    (flow) => flow.owner === owner
+      && !flow.completed
+      // 仅清理“同一客户端”遗留的未完成任务：同一后台登录在不同设备/标签页各自持有独立
+      // clientId，彼此不会互相顶掉；无 clientId（老客户端）时退回按 owner 清理以保持兼容。
+      && (cid ? flow.clientId === cid : true),
   );
   for (const flow of existing) {
     await stopRemoteFlow(store, flow);
@@ -520,6 +553,9 @@ function registerAdminCaptureRoutes({
   app.post("/api/capture/sessions", async (req, res) => {
     const owner = getFlowOwner(req.currentUser);
     const platform = req.body?.platform === "wx" ? "wx" : "qq";
+    // 客户端标识：同一后台登录的不同设备/标签页各自持有独立 clientId，用于隔离抓包任务，
+    // 避免第二个设备开始抓取时把第一个设备的任务顶掉。
+    const clientId = String(req.headers["x-capture-client-id"] || "").trim();
     try {
       if (!owner) return res.status(401).json({ ok: false, error: "未登录" });
       const accountRef = String(req.body?.accountId || "").trim();
@@ -541,7 +577,7 @@ function registerAdminCaptureRoutes({
       if (!config.enabled) {
         return res.status(403).json({ ok: false, error: "抓包登录添加账号未启用" });
       }
-      await removeExistingOwnerFlows(store, owner);
+      await removeExistingOwnerFlows(store, owner, clientId);
 
       const flowId = crypto.randomBytes(18).toString("base64url");
       const remoteSessionId = crypto.randomBytes(18).toString("base64url");
@@ -555,6 +591,7 @@ function registerAdminCaptureRoutes({
         remoteSessionId,
         certificateToken: crypto.randomBytes(24).toString("base64url"),
         owner,
+        clientId,
         accountId,
         platform,
         code: "",
@@ -566,6 +603,9 @@ function registerAdminCaptureRoutes({
         publicInfo: {},
         proxy: {},
         captureStatus: "idle",
+        // 排队信息（透传自 capture 端），以及重放 start 所需的参数。
+        queue: { queued: false, position: 0, queueLength: 0, maxHoldSec: 0, maxHoldRemainingSec: 0 },
+        startBody: { mode: platform, bypassHosts: getCaptureBypassHosts(req) },
         completed: false,
         result: null,
         createdAt: Date.now(),
@@ -577,7 +617,7 @@ function registerAdminCaptureRoutes({
         const started = await captureRequest(config, "/api/capture/start", {
           method: "POST",
           sessionId: remoteSessionId,
-          body: { mode: platform, bypassHosts: getCaptureBypassHosts(req) },
+          body: flow.startBody,
           timeout: 30_000,
         });
         addCapturedValues(flow, started);
@@ -738,7 +778,7 @@ function registerAdminCaptureRoutes({
         wasRunning,
       });
       const config = store.getCaptureConfig();
-      if (flow.platform === "qq" && config.autoImportQqGids !== false) {
+      if (QQ_FRIEND_COLLECTION_ENABLED && flow.platform === "qq" && config.autoImportQqGids !== false) {
         scheduleQqFriendCollection({
           store,
           provider,

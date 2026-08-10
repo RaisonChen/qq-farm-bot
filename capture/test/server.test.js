@@ -224,6 +224,79 @@ test("requestDelete without code removes session immediately", () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("start returns queued payload (not error) when all ports are busy", async () => {
+  // 端口池只有 1 个：预先占用它，再走真实 HTTP /start，第二个会话应被排队而非报错。
+  const { app, sessions } = createServer({ ...TEST_CONFIG, proxyPortPool: [18461] });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    // 预占唯一端口，模拟已有会话正在抓包（不触发 mitmdump）。
+    const held = sessions.acquirePort("holder");
+    assert.deepEqual(held, { port: 18461 });
+
+    const sessionId = "queued-flow";
+    const headers = { ...auth(), "x-capture-session-id": sessionId };
+    await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sessionId }),
+    });
+
+    const res = await fetch(`${base}/api/capture/start`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ mode: "qq" }),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 200, "端口忙时不应返回 502，而是排队");
+    assert.equal(body.ok, true);
+    assert.equal(body.queue.queued, true, "第二个会话应进入排队");
+    assert.equal(body.queue.position, 1);
+    assert.equal(body.queue.queueLength, 1);
+
+    // 释放占用端口后，排队会话再次 /state 触发心跳，随后 /start 应能拿到端口。
+    sessions.releasePort(18461, "holder");
+    const stateRes = await fetch(`${base}/api/sessions/${sessionId}/state`, { headers });
+    assert.equal(stateRes.status, 200);
+  } finally {
+    server.close();
+  }
+});
+
+test("state exposes max-hold remaining seconds for the current port holder", async () => {
+  // 持有端口的会话应在 /state 里暴露“最长占用倒计时”，供前端把剩余时间同步为占用倒计时。
+  const { app, sessions } = createServer({ ...TEST_CONFIG, proxyPortPool: [18471], maxHoldSec: 180 });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const sessionId = "holder-flow";
+    const headers = { ...auth(), "x-capture-session-id": sessionId };
+    await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ sessionId }),
+    });
+
+    // 让该会话持有唯一端口（开始最长占用计时），但不真正拉起 mitmdump。
+    const acquired = sessions.acquirePort(sessionId);
+    assert.deepEqual(acquired, { port: 18471 });
+
+    const stateRes = await fetch(`${base}/api/sessions/${sessionId}/state`, { headers });
+    const body = await stateRes.json();
+    assert.equal(stateRes.status, 200);
+    assert.equal(body.queue.queued, false, "持有端口的会话不应处于排队状态");
+    assert.equal(body.queue.maxHoldSec, 180);
+    assert.ok(
+      body.queue.maxHoldRemainingSec > 0 && body.queue.maxHoldRemainingSec <= 180,
+      "持有端口的会话应返回一个介于 (0, 180] 的最长占用倒计时",
+    );
+  } finally {
+    server.close();
+  }
+});
+
 test.after(() => {
   try {
     fs.rmSync(TEST_PERSIST_DIR, { recursive: true, force: true });

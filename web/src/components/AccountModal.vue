@@ -17,26 +17,51 @@ const emit = defineEmits(['close', 'saved'])
 const CODE_QUERY_RE = /[?&]code=([^&]+)/i
 const QR_AUTO_REFRESH_MS = 110_000
 const CAPTURE_SUCCESS_STORAGE_KEY = 'capture_login_succeeded'
+// 农场 VPN 代理安装包放在 web/public 下，Vite 会以根路径直接提供下载。
+const FARM_VPN_APK_URL = '/农场VPN.apk'
+
+// 抓包任务按“客户端”隔离：同一后台登录在不同设备/标签页各持一个稳定 clientId，
+// 这样彼此不会互相顶掉，只清理自己遗留的任务；多端并发时在 capture 层自动排队。
+const CAPTURE_CLIENT_ID_KEY = 'capture_client_id'
+function resolveCaptureClientId(): string {
+  try {
+    let id = localStorage.getItem(CAPTURE_CLIENT_ID_KEY)
+    if (!id) {
+      id = (globalThis.crypto?.randomUUID?.() || `c-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+      localStorage.setItem(CAPTURE_CLIENT_ID_KEY, id)
+    }
+    return id
+  }
+  catch {
+    return `c-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  }
+}
+const captureClientId = resolveCaptureClientId()
+const captureClientHeaders = { 'x-capture-client-id': captureClientId }
 
 const wxLoginStore = useWxLoginStore()
 
 interface CaptureFlowState {
   id: string
-  platform: 'qq' | 'wx'
+  platform: 'qq'
   codeCaptured: boolean
   accountGid: string
   friendCount: number
   captureStatus: string
+  queue: {
+    queued: boolean
+    position: number
+    queueLength: number
+    maxHoldSec: number
+    maxHoldRemainingSec: number
+  }
   proxy: {
     running: boolean
     status: string
     error: string
   }
   publicInfo: {
-    host: string
-    mitmPort: number
     remainingSec: number
-    certificateUrl: string
   }
 }
 
@@ -50,12 +75,9 @@ const captureLoading = ref(false)
 const captureChecking = ref(false)
 const captureCompleting = ref(false)
 const captureError = ref('')
-const captureCopiedField = ref<'host' | 'port' | ''>('')
 const captureAccountName = ref('')
-const capturePlatform = ref<'qq' | 'wx'>('qq')
 const showCaptureHelp = ref(false)
 const captureHelpMode = ref<'first' | 'daily'>('first')
-const captureHelpDevice = ref<'ios' | 'android'>('ios')
 const captureFlow = ref<CaptureFlowState | null>(null)
 
 const form = reactive({
@@ -66,50 +88,51 @@ const form = reactive({
 
 const captureHelpSteps = computed(() => captureHelpMode.value === 'first'
   ? [
-      '点击开始抓取，获取本次代理地址和端口',
-      '打开 CA 证书，并在手机系统中安装和信任',
+      '下载并安装「农场VPN.apk」（Android 代理应用）',
+      '点击开始抓取，创建本次抓取任务',
+      '打开安装好的农场代理，启动代理开关',
       '连续添加时，先切换到目标 QQ 并彻底关闭上一个农场',
-      '将手机 Wi-Fi 代理设置为页面显示的地址和端口',
-      '彻底关闭后重新打开对应的 QQ 或微信农场',
-      'Code 获取后账号会立即添加；QQ 好友 GID 将在后台继续同步',
-      'QQ 农场保持打开，完整好友列表同步后会立即释放代理，最迟约 15 秒',
+      '打开 QQ 农场，等待抓取完成',
+      'Code 获取后账号会立即添加，随后自动释放代理',
     ]
   : [
-      '点击开始抓取，确认本次代理地址和端口',
+      '点击开始抓取，创建本次抓取任务',
+      '打开农场代理，启动代理开关',
       '连续添加时，先切换到目标 QQ 并彻底关闭上一个农场',
-      '将手机 Wi-Fi 代理更新为本次显示的地址和端口',
-      '重新打开对应农场，并保持页面打开',
-      '账号添加后，QQ 农场继续保持打开，最迟约 15 秒完成后台同步',
-      '后台同步结束后，将手机 Wi-Fi 代理改回关闭',
+      '打开 QQ 农场，等待抓取完成',
+      'Code 获取后账号会立即添加，随后自动释放代理',
+      '账号添加后，在农场代理中关闭代理开关',
     ])
 
-const captureDeviceSteps = computed(() => captureHelpDevice.value === 'ios'
-  ? [
-      '在 Safari 中点击“打开证书”并允许下载描述文件',
-      '进入“设置 → 通用 → VPN 与设备管理”安装描述文件',
-      '进入“设置 → 通用 → 关于本机 → 证书信任设置”启用完全信任',
-    ]
-  : [
-      '点击“打开证书”下载 CA 文件',
-      '进入系统安全设置中的“安装证书”或“凭据存储”',
-      '选择 CA 证书并确认安装；不同品牌的菜单名称可能不同',
-    ])
+const captureQueued = computed(() => captureFlow.value?.queue?.queued === true)
+const captureQueuePosition = computed(() => captureFlow.value?.queue?.position || 0)
+const captureAheadCount = computed(() => Math.max(0, captureQueuePosition.value - 1))
+// 剩余时间：持有端口时显示“最长占用倒计时”（到时会被强制释放切给下一位）；
+// capture 未配置占用上限时回退到自动停止倒计时。
+const captureRemainingSec = computed(() => {
+  const hold = captureFlow.value?.queue?.maxHoldRemainingSec || 0
+  if (hold > 0)
+    return hold
+  return captureFlow.value?.publicInfo?.remainingSec || 0
+})
 
 const captureCurrentStep = computed(() => {
   if (!captureFlow.value)
     return '开始新的抓取任务'
+  if (captureQueued.value)
+    return captureAheadCount.value > 0 ? `排队中，前面还有 ${captureAheadCount.value} 人` : '排队中，即将轮到你'
   if (!captureFlow.value.codeCaptured)
-    return `设置 Wi-Fi 代理并打开${captureFlow.value.platform === 'qq' ? ' QQ' : '微信'}农场`
+    return '启动农场代理并打开 QQ 农场'
   return '已获取 Code，正在立即完成账号操作'
 })
 
 const captureNextStep = computed(() => {
   if (!captureFlow.value)
-    return '开始后按本次显示的代理信息设置手机 Wi-Fi'
+    return '开始后打开农场代理并启动代理开关'
+  if (captureQueued.value)
+    return '等待端口释放，轮到你会自动开始，请勿关闭本窗口'
   if (!captureFlow.value.codeCaptured)
-    return '重新打开小程序，并保持农场页面打开'
-  if (captureFlow.value.platform === 'qq')
-    return `即将自动${props.editData ? '更新' : '添加'}账号，好友 GID 将在后台同步`
+    return '打开 QQ 农场，并保持农场页面打开'
   return `即将自动${props.editData ? '更新' : '添加'}账号`
 })
 
@@ -158,9 +181,15 @@ const { pause: stopWxCheck, resume: startWxCheck } = useIntervalFn(async () => {
 const { pause: stopCaptureCheck, resume: startCaptureCheck } = useIntervalFn(async () => {
   if (activeTab.value !== 'capture' || !captureFlow.value || captureCompleting.value || captureChecking.value)
     return
+  // 记录本轮轮询针对的会话 id：请求飞行途中若用户点了“取消抓取”，
+  // captureFlow 会被清空/替换，回来后不能再把旧数据写回，否则界面会“复活”回抓取态。
+  const polledFlowId = captureFlow.value.id
   captureChecking.value = true
   try {
-    const { data } = await api.get(`/api/capture/sessions/${captureFlow.value.id}`, { timeout: 20000 })
+    const { data } = await api.get(`/api/capture/sessions/${polledFlowId}`, { timeout: 20000, headers: captureClientHeaders })
+    // 会话已被取消（置空）或已切换到另一个会话：丢弃这次过期的响应。
+    if (!captureFlow.value || captureFlow.value.id !== polledFlowId)
+      return
     if (!data?.ok || !data.data)
       return
     captureFlow.value = data.data
@@ -169,7 +198,9 @@ const { pause: stopCaptureCheck, resume: startCaptureCheck } = useIntervalFn(asy
       await completeCaptureAccount()
   }
   catch (e: any) {
-    captureError.value = e.response?.data?.error || e.message || '查询抓取状态失败'
+    // 同样：取消后到达的错误不应再显示，避免“已取消却仍报错/停留”。
+    if (captureFlow.value && captureFlow.value.id === polledFlowId)
+      captureError.value = e.response?.data?.error || e.message || '查询抓取状态失败'
   }
   finally {
     captureChecking.value = false
@@ -189,10 +220,12 @@ async function loadCaptureConfig() {
 async function cancelCaptureSession() {
   stopCaptureCheck()
   const flowId = captureFlow.value?.id
+  // 立即回到初始态：清空会话与错误提示，避免取消后界面仍停留在抓取/报错状态。
   captureFlow.value = null
+  captureError.value = ''
   if (flowId) {
     try {
-      await api.delete(`/api/capture/sessions/${flowId}`)
+      await api.delete(`/api/capture/sessions/${flowId}`, { headers: captureClientHeaders })
     }
     catch {}
   }
@@ -204,9 +237,9 @@ async function startCaptureSession() {
   await cancelCaptureSession()
   try {
     const { data } = await api.post('/api/capture/sessions', {
-      platform: capturePlatform.value,
+      platform: 'qq',
       accountId: props.editData?.id || '',
-    }, { timeout: 35000 })
+    }, { timeout: 35000, headers: captureClientHeaders })
     if (!data?.ok || !data.data)
       throw new Error(data?.error || '启动抓取失败')
     captureFlow.value = data.data
@@ -228,7 +261,7 @@ async function completeCaptureAccount() {
   try {
     const { data } = await api.post(`/api/capture/sessions/${captureFlow.value.id}/complete`, {
       name: captureAccountName.value.trim(),
-    }, { timeout: 35000 })
+    }, { timeout: 35000, headers: captureClientHeaders })
     if (!data?.ok)
       throw new Error(data?.error || (props.editData ? '更新账号失败' : '添加账号失败'))
     localStorage.setItem(CAPTURE_SUCCESS_STORAGE_KEY, '1')
@@ -252,44 +285,6 @@ async function completeCaptureAccount() {
 function openCaptureHelp() {
   captureHelpMode.value = localStorage.getItem(CAPTURE_SUCCESS_STORAGE_KEY) === '1' ? 'daily' : 'first'
   showCaptureHelp.value = true
-}
-
-async function copyCaptureValue(field: 'host' | 'port') {
-  const host = captureFlow.value?.publicInfo.host || ''
-  const port = captureFlow.value?.publicInfo.mitmPort || 0
-  if (!host || !port)
-    return
-  const value = field === 'host' ? host : String(port)
-  try {
-    let copied = false
-    if (navigator.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(value)
-        copied = true
-      }
-      catch {}
-    }
-    if (!copied) {
-      const textarea = document.createElement('textarea')
-      textarea.value = value
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      document.body.appendChild(textarea)
-      textarea.select()
-      copied = document.execCommand('copy')
-      textarea.remove()
-    }
-    if (!copied)
-      throw new Error('copy failed')
-    captureCopiedField.value = field
-    setTimeout(() => {
-      if (captureCopiedField.value === field)
-        captureCopiedField.value = ''
-    }, 1800)
-  }
-  catch {
-    captureError.value = '复制失败，请手动填写代理地址和端口'
-  }
 }
 
 function shouldRefreshWxQr() {
@@ -397,9 +392,7 @@ watch(() => props.show, (newVal) => {
   if (newVal) {
     errorMessage.value = ''
     captureError.value = ''
-    captureCopiedField.value = ''
     captureAccountName.value = props.editData?.name || ''
-    capturePlatform.value = props.editData?.platform === 'wx' ? 'wx' : 'qq'
     captureHelpMode.value = localStorage.getItem(CAPTURE_SUCCESS_STORAGE_KEY) === '1' ? 'daily' : 'first'
     void loadCaptureConfig()
     if (props.editData) {
@@ -484,7 +477,7 @@ watch(activeTab, (tab) => {
             }"
             @click="activeTab = 'capture'"
           >
-            抓包登录
+            QQ抓包登录
           </button>
         </div>
 
@@ -538,31 +531,19 @@ watch(activeTab, (tab) => {
             :disabled="!!captureFlow"
           />
 
-          <div class="flex flex-col gap-1.5">
-            <label class="text-sm font-medium" :style="{ color: 'var(--theme-text)' }">平台</label>
-            <div class="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                class="h-9 rounded-lg px-3 text-sm transition-colors"
-                :class="capturePlatform === 'qq' ? 'text-white' : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200'"
-                :style="capturePlatform === 'qq' ? { background: 'var(--theme-gradient)' } : {}"
-                :disabled="!!captureFlow"
-                @click="capturePlatform = 'qq'"
-              >
-                QQ 小程序
-              </button>
-              <button
-                type="button"
-                class="h-9 rounded-lg px-3 text-sm transition-colors"
-                :class="capturePlatform === 'wx' ? 'text-white' : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200'"
-                :style="capturePlatform === 'wx' ? { background: 'var(--theme-gradient)' } : {}"
-                :disabled="!!captureFlow"
-                @click="capturePlatform = 'wx'"
-              >
-                微信小程序
-              </button>
-            </div>
-          </div>
+          <a
+            v-if="!captureFlow"
+            :href="FARM_VPN_APK_URL"
+            download
+            class="h-11 w-full flex items-center justify-between border border-gray-200 rounded-lg px-3 text-left text-sm dark:border-gray-700"
+            :style="{ color: 'var(--theme-text)' }"
+          >
+            <span class="flex items-center gap-2">
+              <span class="i-carbon-download" :style="{ color: 'var(--theme-primary)' }" />
+              下载农场VPN.apk
+            </span>
+            <span class="i-carbon-chevron-right opacity-60" />
+          </a>
 
           <button
             v-if="!captureFlow"
@@ -592,6 +573,21 @@ watch(activeTab, (tab) => {
           </div>
 
           <template v-else>
+            <div
+              v-if="captureQueued"
+              class="flex items-center gap-3 rounded-lg bg-amber-50 px-3 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200"
+            >
+              <span class="i-carbon-time flex-none text-lg" />
+              <div class="min-w-0">
+                <div class="font-semibold">
+                  {{ captureAheadCount > 0 ? `排队中，前面还有 ${captureAheadCount} 人` : '排队中，即将轮到你' }}
+                </div>
+                <div class="mt-0.5 text-xs opacity-80">
+                  正在等待端口释放，轮到你会自动开始，请勿关闭本窗口。
+                </div>
+              </div>
+            </div>
+
             <div class="rounded-lg px-3 py-3 text-sm" style="background-color: color-mix(in srgb, var(--theme-primary) 10%, transparent); color: var(--theme-text);">
               <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0">
@@ -616,73 +612,26 @@ watch(activeTab, (tab) => {
               </div>
             </div>
 
-            <div class="grid grid-cols-2 gap-2 text-sm">
-              <div class="min-w-0 flex items-center justify-between gap-1 border border-gray-200 rounded-lg px-3 py-3 dark:border-gray-700">
-                <div class="min-w-0">
-                  <div class="text-xs opacity-60" :style="{ color: 'var(--theme-text)' }">
-                    代理服务器
-                  </div>
-                  <div class="mt-1 break-all font-semibold" :style="{ color: 'var(--theme-text)' }">
-                    {{ captureFlow.publicInfo.host || '-' }}
-                  </div>
-                </div>
-                <BaseButton
-                  variant="ghost"
-                  size="sm"
-                  :title="captureCopiedField === 'host' ? '已复制' : '复制代理服务器'"
-                  class="flex-none !px-2"
-                  @click="copyCaptureValue('host')"
-                >
-                  <span :class="captureCopiedField === 'host' ? 'i-carbon-checkmark text-green-600' : 'i-carbon-copy'" />
-                </BaseButton>
-              </div>
-              <div class="min-w-0 flex items-center justify-between gap-1 border border-gray-200 rounded-lg px-3 py-3 dark:border-gray-700">
-                <div class="min-w-0">
-                  <div class="text-xs opacity-60" :style="{ color: 'var(--theme-text)' }">
-                    代理端口
-                  </div>
-                  <div class="mt-1 font-semibold" :style="{ color: 'var(--theme-text)' }">
-                    {{ captureFlow.publicInfo.mitmPort || '-' }}
-                  </div>
-                </div>
-                <BaseButton
-                  variant="ghost"
-                  size="sm"
-                  :title="captureCopiedField === 'port' ? '已复制' : '复制代理端口'"
-                  class="flex-none !px-2"
-                  @click="copyCaptureValue('port')"
-                >
-                  <span :class="captureCopiedField === 'port' ? 'i-carbon-checkmark text-green-600' : 'i-carbon-copy'" />
-                </BaseButton>
-              </div>
-            </div>
-
             <div class="rounded-lg bg-gray-50 p-3 text-sm dark:bg-gray-800">
-              <div class="flex items-center justify-between gap-3">
-                <span :style="{ color: 'var(--theme-text)' }">Code</span>
-                <span :class="captureFlow.codeCaptured ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'">
-                  {{ captureFlow.codeCaptured ? '已获取' : '等待中' }}
-                </span>
+              <div v-if="captureQueued" class="flex items-center justify-between gap-3">
+                <span :style="{ color: 'var(--theme-text)' }">排队人数</span>
+                <span :style="{ color: 'var(--theme-primary)' }">{{ captureFlow.queue.queueLength }} 人（第 {{ captureQueuePosition }} 位）</span>
               </div>
-              <div v-if="captureFlow.platform === 'qq'" class="mt-2 flex items-center justify-between gap-3">
-                <span :style="{ color: 'var(--theme-text)' }">好友 GID</span>
-                <span :style="{ color: 'var(--theme-primary)' }">{{ captureFlow.friendCount }} 个</span>
-              </div>
-              <div class="mt-2 flex items-center justify-between gap-3">
-                <span :style="{ color: 'var(--theme-text)' }">剩余时间</span>
-                <span :style="{ color: 'var(--theme-text)' }">{{ captureFlow.publicInfo.remainingSec }} 秒</span>
-              </div>
+              <template v-else>
+                <div class="flex items-center justify-between gap-3">
+                  <span :style="{ color: 'var(--theme-text)' }">Code</span>
+                  <span :class="captureFlow.codeCaptured ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'">
+                    {{ captureFlow.codeCaptured ? '已获取' : '等待中' }}
+                  </span>
+                </div>
+                <div class="mt-2 flex items-center justify-between gap-3">
+                  <span :style="{ color: 'var(--theme-text)' }">剩余时间</span>
+                  <span :style="{ color: 'var(--theme-text)' }">{{ captureRemainingSec }} 秒</span>
+                </div>
+              </template>
             </div>
 
             <div class="sticky bottom-0 z-10 flex flex-wrap justify-end gap-2 border-t border-gray-200 px-4 py-3 -mx-4 dark:border-gray-700" :style="{ background: 'var(--theme-bg)' }">
-              <BaseButton
-                variant="secondary"
-                size="sm"
-                :href="captureFlow.publicInfo.certificateUrl"
-              >
-                <span class="i-carbon-certificate" />
-                打开证书
-              </BaseButton>
               <BaseButton variant="outline" size="sm" @click="cancelCaptureSession">
                 取消抓取
               </BaseButton>
@@ -756,7 +705,7 @@ watch(activeTab, (tab) => {
       <div class="max-h-[78vh] max-w-md w-full flex flex-col overflow-hidden rounded-t-lg shadow-2xl md:rounded-lg" :style="{ background: 'var(--theme-bg)' }">
         <div class="h-14 flex flex-none items-center justify-between border-b border-gray-200 px-4 dark:border-gray-700">
           <h4 class="text-base font-semibold" :style="{ color: 'var(--theme-text)' }">
-            抓包登录使用说明
+            QQ抓包登录使用说明
           </h4>
           <BaseButton variant="ghost" class="!h-9 !w-9 !p-0" title="关闭使用说明" @click="showCaptureHelp = false">
             <span class="i-carbon-close text-lg" />
@@ -781,7 +730,7 @@ watch(activeTab, (tab) => {
               :style="captureHelpMode === 'daily' ? { background: 'var(--theme-gradient)' } : {}"
               @click="captureHelpMode = 'daily'"
             >
-              已装证书
+              已装代理
             </button>
           </div>
 
@@ -796,47 +745,10 @@ watch(activeTab, (tab) => {
             </div>
           </div>
 
-          <template v-if="captureHelpMode === 'first'">
-            <div class="mt-3 border-t border-gray-200 pt-4 dark:border-gray-700">
-              <div class="mb-3 text-sm font-semibold" :style="{ color: 'var(--theme-text)' }">
-                证书安装帮助
-              </div>
-              <div class="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  class="h-9 rounded-lg px-3 text-sm transition-colors"
-                  :class="captureHelpDevice === 'ios' ? 'text-white' : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200'"
-                  :style="captureHelpDevice === 'ios' ? { background: 'var(--theme-gradient)' } : {}"
-                  @click="captureHelpDevice = 'ios'"
-                >
-                  iPhone / iPad
-                </button>
-                <button
-                  type="button"
-                  class="h-9 rounded-lg px-3 text-sm transition-colors"
-                  :class="captureHelpDevice === 'android' ? 'text-white' : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200'"
-                  :style="captureHelpDevice === 'android' ? { background: 'var(--theme-gradient)' } : {}"
-                  @click="captureHelpDevice = 'android'"
-                >
-                  Android
-                </button>
-              </div>
-              <div class="mt-3 space-y-2">
-                <div v-for="(step, index) in captureDeviceSteps" :key="step" class="flex items-start gap-2 text-xs leading-5" :style="{ color: 'var(--theme-text)' }">
-                  <span class="flex-none opacity-60">{{ index + 1 }}.</span>
-                  <span class="break-words">{{ step }}</span>
-                </div>
-              </div>
-            </div>
-          </template>
-
           <div class="mt-4 rounded-lg bg-amber-50 px-3 py-3 text-xs text-amber-800 leading-5 dark:bg-amber-900/20 dark:text-amber-200">
-            <div>每次任务的代理端口可能变化，请以当前页面显示为准。</div>
+            <div>农场代理需要保持开启，直到账号添加完成。</div>
             <div class="mt-1">
-              服务端会自动释放代理，但账号完成后仍需在手机上手动关闭 Wi-Fi 代理。
-            </div>
-            <div v-if="capturePlatform === 'wx'" class="mt-1">
-              微信抓取成功后无法继续进入农场属于正常现象。
+              服务端会自动释放代理，但账号完成后仍需在农场代理中手动关闭代理开关。
             </div>
           </div>
         </div>
