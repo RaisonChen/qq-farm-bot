@@ -175,7 +175,7 @@ function getFinalStageLands(lands, options = {}) {
     const matureIndex = orderedPhases.findIndex(item => toNum(item.phase && item.phase.phase) === PlantPhase.MATURE);
     if (matureIndex <= 0) continue;
 
-    const currentIndex = orderedPhases.findIndex(item => item.phase === currentPhase);
+    const currentIndex = orderedPhases.findIndex(item => toNum(item.phase && item.phase.phase) === toNum(currentPhase.phase));
     if (currentIndex !== matureIndex - 1) continue;
 
     if (organicOnly && Object.hasOwn(plant, 'left_inorc_fert_times')) {
