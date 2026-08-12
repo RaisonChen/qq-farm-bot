@@ -337,7 +337,7 @@ function handleLogoFileChange(event: Event) {
         </div>
 
         <div class="mb-3 rounded-2xl bg-gray-50 px-4 py-3 text-xs text-gray-600 dark:bg-gray-900/40 dark:text-gray-300">
-          保存会立即影响扫码登录、自动添加账号与用户隔离行为，建议确认当前环境、代理地址和启用状态后再提交。
+          保存会立即影响扫码登录、自动添加账号与用户隔离行为，建议确认当前环境与启用状态后再提交。
         </div>
 
         <div class="grid grid-cols-2 gap-3 text-sm">
@@ -347,27 +347,6 @@ function handleLogoFileChange(event: Event) {
               label="启用微信登录"
             />
           </div>
-          <BaseInput
-            v-model="localWxConfig.apiBase"
-            label="API地址"
-            type="text"
-            placeholder="https://code.z74d.top/api"
-            class="col-span-2"
-          />
-          <BaseInput
-            v-model="localWxConfig.apiKey"
-            label="API密钥"
-            type="text"
-            placeholder="可选，用于代理模式"
-            class="col-span-2"
-          />
-          <BaseInput
-            v-model="localWxConfig.proxyApiUrl"
-            label="代理API地址"
-            type="text"
-            placeholder="https://code.z74d.top/api"
-            class="col-span-2"
-          />
           <BaseSwitch
             v-model="localWxConfig.autoAddAccount"
             label="自动添加账号"

@@ -404,7 +404,6 @@ function registerAdminSystemRoutes({
           enabled: data?.enabled === true,
           autoAddAccount: data?.autoAddAccount === true,
           userIsolation: data?.userIsolation === true,
-          apiBase: data?.apiBase || "",
           confirmation: "UPDATE_WX_CONFIG",
         });
         res.json({ ok: true, data });

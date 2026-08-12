@@ -1,187 +1,100 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import api from '@/api'
 import { useUserStore } from './user'
 
 export interface WxLoginConfig {
   enabled: boolean
-  apiBase: string
-  apiKey: string
-  proxyApiUrl: string
   appId: string
   autoAddAccount: boolean
   userIsolation: boolean
 }
 
 export const useWxLoginStore = defineStore('wx-login', () => {
-  // 默认配置
   const defaultConfig: WxLoginConfig = {
     enabled: true,
-    apiBase: 'https://code.z74d.top/api',
-    apiKey: '',
-    proxyApiUrl: 'https://code.z74d.top/api',
     appId: 'wx5306c5978fdb76e4',
     autoAddAccount: true,
     userIsolation: true,
   }
-
-  // 获取当前用户ID
   const userStore = useUserStore()
   const currentUserId = computed(() => userStore.username || 'default')
-
-  // 使用 ref 存储配置
   const rawConfig = ref<WxLoginConfig>({ ...defaultConfig })
-
-  // 初始化时从服务器加载
-  async function loadConfig() {
-    await loadConfigFromServer()
-  }
-
-  // 从服务器加载配置
-  async function loadConfigFromServer() {
-    try {
-      const response = await fetch('/api/user/wxlogin-config', {
-        headers: {
-          'x-admin-token': localStorage.getItem('admin_token') || '',
-        },
-      })
-      const result = await response.json()
-      if (result.ok && result.config) {
-        // 合并服务器配置（服务器配置优先）
-        rawConfig.value = { ...defaultConfig, ...result.config }
-      }
-      else {
-        rawConfig.value = { ...defaultConfig }
-      }
-    }
-    catch (e) {
-      console.error('从服务器加载配置失败:', e)
-      rawConfig.value = { ...defaultConfig }
-    }
-  }
-
-  // 初始化加载
-  loadConfig()
-
-  // 合并配置：确保新字段有默认值
-  const config = computed<WxLoginConfig>(() => ({
-    ...defaultConfig,
-    ...rawConfig.value,
-  }))
-
-  // 扫码登录状态
+  const config = computed<WxLoginConfig>(() => ({ ...defaultConfig, ...rawConfig.value }))
   const isLoading = ref(false)
   const qrCode = ref<string | null>(null)
   const qrCreatedAt = ref(0)
   const uuid = ref('')
   const wxid = ref('')
+  const taskId = ref('')
+  const nickname = ref('')
+  const avatar = ref('')
   const status = ref<'idle' | 'qr_loading' | 'qr_ready' | 'scanning' | 'confirming' | 'code_loading' | 'success' | 'error'>('idle')
   const statusMessage = ref('')
   const errorMessage = ref('')
+  const qrEndpoint = 'tasks'
+  let qrObjectUrl = ''
 
-  // 获取二维码接口地址
-  const qrEndpoint = 'LoginGetQRCar'
+  async function loadConfig() {
+    try {
+      const { data } = await api.get('/api/user/wxlogin-config', { skipErrorToast: true } as any)
+      if (data?.ok && data.config) {
+        rawConfig.value = { ...defaultConfig, ...data.config }
+      }
+      else {
+        rawConfig.value = { ...defaultConfig }
+      }
+    }
+    catch {
+      // 拉取失败时回退默认值，后端仍有 enabled 守卫兜底
+      rawConfig.value = { ...defaultConfig }
+    }
+  }
 
-  // 重置登录状态
+  async function disposeTask() {
+    const id = taskId.value
+    taskId.value = ''
+    if (id) await api.delete(`/api/wx-login/tasks/${id}`, { skipErrorToast: true } as any).catch(() => undefined)
+  }
+
   function resetState() {
+    void disposeTask()
+    if (qrObjectUrl) URL.revokeObjectURL(qrObjectUrl)
+    qrObjectUrl = ''
     qrCode.value = null
     qrCreatedAt.value = 0
     uuid.value = ''
     wxid.value = ''
+    nickname.value = ''
+    avatar.value = ''
     status.value = 'idle'
     statusMessage.value = ''
     errorMessage.value = ''
   }
 
-  // 判断是否需要使用代理模式（api_key 不为空）
-  const useProxyMode = computed(() => !!config.value.apiKey)
-
-  // 获取代理API URL（确保有默认值）
-  const proxyApiUrl = computed(() =>
-    (useProxyMode.value ? config.value.proxyApiUrl : config.value.apiBase)
-    || defaultConfig.proxyApiUrl,
-  )
-
-  function buildProxyHeaders() {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-proxy-api-url': proxyApiUrl.value,
-      'x-proxy-app-id': config.value.appId,
-    }
-    if (config.value.apiKey)
-      headers['x-proxy-api-key'] = config.value.apiKey
-    return headers
-  }
-
-  async function requestProxy(body: Record<string, any>) {
-    const response = await fetch('/api/proxy', {
-      method: 'POST',
-      headers: buildProxyHeaders(),
-      body: JSON.stringify(body),
-    })
-    return response.json()
-  }
-
-  async function requestPublicApi(path: string, init?: RequestInit) {
-    const base = String(config.value.apiBase || defaultConfig.apiBase).replace(/\/+$/, '')
-    const response = await fetch(`${base}${path}`, init)
-    return response.json()
-  }
-
-  // 获取二维码
   async function getQRCode(): Promise<boolean> {
+    resetState()
     isLoading.value = true
     status.value = 'qr_loading'
     statusMessage.value = '正在获取二维码...'
-    errorMessage.value = ''
-
     try {
-      let data: any
-
-      if (useProxyMode.value) {
-        const result = await requestProxy({ action: 'getqr' })
-        if (result.code === 0 && result.data) {
-          data = {
-            Success: true,
-            Data: {
-              Uuid: result.data.Uuid || result.data.uuid,
-              QrBase64: result.data.QrBase64 || result.data.qrBase64,
-            },
-          }
-        }
-        else if (result.Success !== undefined) {
-          data = result
-        }
-        else {
-          data = { Success: false, Message: result.msg || '获取二维码失败' }
-        }
-      }
-      else {
-        data = await requestPublicApi(`/Login/${qrEndpoint}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: '{}',
-        })
-      }
-
-      if (data.Success && data.Data) {
-        uuid.value = data.Data.Uuid
-        qrCode.value = data.Data.QrBase64 || data.Data.qrBase64 || ''
-        qrCreatedAt.value = Date.now()
-        status.value = 'qr_ready'
-        statusMessage.value = '请使用微信扫码登录'
-        return true
-      }
-      else {
-        status.value = 'error'
-        qrCreatedAt.value = 0
-        errorMessage.value = data.Message || '获取二维码失败'
-        return false
-      }
+      const created = await api.post('/api/wx-login/tasks', { app_id: config.value.appId })
+      const task = created.data?.data
+      const id = String(task?.task_id || '')
+      if (!id || !task?.qr_url) throw new Error('未创建登录任务')
+      taskId.value = id
+      uuid.value = id
+      const image = await api.get(task.qr_url, { responseType: 'blob' })
+      qrObjectUrl = URL.createObjectURL(image.data)
+      qrCode.value = qrObjectUrl
+      qrCreatedAt.value = Date.now()
+      status.value = 'qr_ready'
+      statusMessage.value = '请使用微信扫码登录'
+      return true
     }
-    catch (e: any) {
+    catch (error: any) {
       status.value = 'error'
-      qrCreatedAt.value = 0
-      errorMessage.value = `请求失败: ${e.message}`
+      errorMessage.value = error.response?.data?.error || error.message || '获取二维码失败'
       return false
     }
     finally {
@@ -189,157 +102,63 @@ export const useWxLoginStore = defineStore('wx-login', () => {
     }
   }
 
-  // 检查登录状态
   async function checkLogin(): Promise<{ success: boolean, wxid?: string, nickname?: string, avatar?: string }> {
-    if (!uuid.value) {
-      return { success: false }
-    }
-
+    if (!taskId.value) return { success: false }
     status.value = 'scanning'
     statusMessage.value = '正在检查登录状态...'
-
     try {
-      let data: any
-
-      if (useProxyMode.value) {
-        const result = await requestProxy({
-          action: 'checkqr',
-          uuid: uuid.value,
-        })
-        // 尝试从不同字段获取wxid
-        const resultData = result.data || result.Data || {}
-        const wxid = resultData.wxid || resultData.Wxid || resultData.userName || resultData.UserName || ''
-        const nickname = resultData.nickname || resultData.Nickname || resultData.nickName || resultData.NickName || '微信用户'
-        const avatar = resultData.avatar || resultData.Avatar || resultData.avatarUrl || resultData.AvatarUrl || resultData.headImgUrl || resultData.HeadImgUrl || ''
-
-        if (result.code === 0 && wxid) {
-          // 真正登录成功（有wxid）
-          data = {
-            Success: true,
-            Data: {
-              acctSectResp: {
-                userName: wxid,
-                nickName: nickname,
-                avatar,
-              },
-            },
-          }
-        }
-        else if (result.code === -1 || result.code === -2 || (result.code === 0 && !wxid)) {
-          // 等待扫码或等待确认，不是错误
-          // 注意：有些API在code===0但wxid为空时也表示等待中
-          data = {
-            Success: true,
-            Data: {
-              status: result.code === -2 ? 1 : 0, // -2表示已扫码待确认，-1表示等待扫码
-            },
-          }
-        }
-        else if (result.Success !== undefined) {
-          data = result
-        }
-        else {
-          data = { Success: false, Message: result.msg || '登录检查失败' }
-        }
-      }
-      else {
-        data = await requestPublicApi(`/Login/LoginCheckQR?uuid=${encodeURIComponent(uuid.value)}`, {
-          method: 'POST',
-        })
-      }
-
-      const acctResp = data?.Data?.acctSectResp || data?.Data?.AcctSectResp
-      const userName = acctResp?.userName || acctResp?.UserName
-      const nickName = acctResp?.nickName || acctResp?.NickName || '微信用户'
-      const avatar = acctResp?.avatar || acctResp?.Avatar || acctResp?.avatarUrl || acctResp?.AvatarUrl || acctResp?.headImgUrl || acctResp?.HeadImgUrl || ''
-      const qrStatus = data?.Data?.status
-
-      if (data.Success && userName) {
-        wxid.value = userName
-        status.value = 'success'
-        statusMessage.value = `登录成功！欢迎 ${nickName}`
-        return { success: true, wxid: userName, nickname: nickName, avatar }
-      }
-      else if (data.Success && (qrStatus === 1 || qrStatus === 0)) {
-        status.value = qrStatus === 1 ? 'confirming' : 'qr_ready'
-        statusMessage.value = qrStatus === 1 ? '已扫码，请在手机确认登录' : '等待扫码中'
+      const result = await api.get(`/api/wx-login/tasks/${taskId.value}/status`, { timeout: 40000 })
+      const taskStatus = result.data?.data?.status
+      if (taskStatus === 'waiting') {
+        status.value = 'qr_ready'
+        statusMessage.value = '等待扫码中'
         return { success: false }
       }
-      else {
-        status.value = 'error'
-        errorMessage.value = data.Message || '登录检查失败'
+      if (taskStatus === 'scanned') {
+        status.value = 'confirming'
+        statusMessage.value = '已扫码，请在手机确认登录'
         return { success: false }
       }
+      if (taskStatus !== 'authorized') throw new Error('二维码已失效，请重新获取')
+      status.value = 'confirming'
+      statusMessage.value = '正在建立登录会话...'
+      const confirmed = await api.post(`/api/wx-login/tasks/${taskId.value}/confirm`)
+      const identity = String(confirmed.data?.data?.openid || confirmed.data?.data?.wxid || '')
+      wxid.value = identity
+      nickname.value = identity || '微信用户'
+      avatar.value = ''
+      status.value = 'success'
+      statusMessage.value = '登录成功，正在获取农场 Code...'
+      return { success: true, wxid: wxid.value, nickname: nickname.value, avatar: avatar.value }
     }
-    catch (e: any) {
+    catch (error: any) {
       status.value = 'error'
-      errorMessage.value = `请求失败: ${e.message}`
+      errorMessage.value = error.response?.data?.error || error.message || '登录状态检查失败'
       return { success: false }
     }
   }
 
-  // 获取QQ农场Code
-  async function getFarmCode(wxidParam?: string): Promise<{ success: boolean, code?: string }> {
-    const targetWxid = wxidParam || wxid.value
-    if (!targetWxid) {
-      return { success: false }
-    }
-
+  async function getFarmCode(wxidParam?: string): Promise<{ success: boolean, code?: string, wxid?: string, nickname?: string, avatar?: string }> {
+    if (!taskId.value) return { success: false }
     isLoading.value = true
     status.value = 'code_loading'
     statusMessage.value = '正在获取QQ农场Code...'
     errorMessage.value = ''
-
     try {
-      let data: any
-
-      if (useProxyMode.value) {
-        const result = await requestProxy({
-          action: 'jslogin',
-          wxid: targetWxid,
-        })
-        const resultData = result.data || result.Data || {}
-        if (result.code === 0 && resultData) {
-          data = {
-            Success: true,
-            Data: {
-              code: resultData.code || resultData.Code,
-            },
-          }
-        }
-        else if (result.Success !== undefined) {
-          data = result
-        }
-        else {
-          data = { Success: false, Message: result.msg || '获取Code失败' }
-        }
-      }
-      else {
-        data = await requestPublicApi('/Wxapp/JSLogin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            Wxid: targetWxid,
-            Appid: config.value.appId || defaultConfig.appId,
-          }),
-        })
-      }
-
-      if (data.Success && data.Data && data.Data.code) {
-        status.value = 'success'
-        statusMessage.value = '已获取QQ农场Code'
-        return { success: true, code: data.Data.code }
-      }
-      else {
-        const errMsg = data.Data?.jsapiBaseresponse?.errmsg || data.Message || '获取Code失败'
-        status.value = 'error'
-        errorMessage.value = errMsg
-        return { success: false }
-      }
+      const result = await api.post(`/api/wx-login/tasks/${taskId.value}/code`)
+      const data = result.data?.data || {}
+      const code = String(data.code || '').trim()
+      if (!code) throw new Error('未获取到登录 Code')
+      wxid.value = String(data.wxid || data.openid || wxidParam || wxid.value)
+      nickname.value = nickname.value || wxid.value || '微信用户'
+      taskId.value = ''
+      status.value = 'success'
+      statusMessage.value = '已获取QQ农场Code'
+      return { success: true, code, wxid: wxid.value, nickname: nickname.value, avatar: avatar.value }
     }
-    catch (e: any) {
+    catch (error: any) {
       status.value = 'error'
-      errorMessage.value = `请求失败: ${e.message}`
+      errorMessage.value = error.response?.data?.error || error.message || '获取Code失败'
       return { success: false }
     }
     finally {
@@ -347,23 +166,7 @@ export const useWxLoginStore = defineStore('wx-login', () => {
     }
   }
 
-  return {
-    config,
-    isLoading,
-    qrCode,
-    qrCreatedAt,
-    uuid,
-    wxid,
-    status,
-    statusMessage,
-    errorMessage,
-    qrEndpoint,
-    currentUserId,
-    useProxyMode,
-    resetState,
-    getQRCode,
-    checkLogin,
-    getFarmCode,
-    loadConfigFromServer,
-  }
+  loadConfig()
+
+  return { config, isLoading, qrCode, qrCreatedAt, uuid, wxid, taskId, nickname, avatar, status, statusMessage, errorMessage, qrEndpoint, currentUserId, useProxyMode: computed(() => false), resetState, getQRCode, checkLogin, getFarmCode, loadConfigFromServer: loadConfig }
 })

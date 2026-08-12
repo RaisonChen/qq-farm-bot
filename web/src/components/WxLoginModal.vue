@@ -60,7 +60,8 @@ async function handleAutoAddAccount(wxid: string, nickname?: string, avatar?: st
     const result = await wxLoginStore.getFarmCode(wxid)
 
     if (result.success && result.code) {
-      const name = accountName.value.trim() || nickname || `微信账号${Date.now()}`
+      const accountWxid = result.wxid || wxid
+      const name = accountName.value.trim() || result.nickname || nickname || `微信账号${Date.now()}`
 
       // 检查是否启用自动添加账号
       if (wxLoginStore.config.autoAddAccount) {
@@ -69,8 +70,8 @@ async function handleAutoAddAccount(wxid: string, nickname?: string, avatar?: st
           code: result.code,
           platform: 'wx',
           loginType: 'wx_qr',
-          wxid,
-          avatar,
+          wxid: accountWxid,
+          avatar: result.avatar || avatar,
         })
         emit('saved')
         close()
@@ -104,15 +105,9 @@ function close() {
 }
 
 // 二维码图片地址
-const qrImageSrc = computed(() => {
-  if (!wxLoginStore.qrCode)
-    return ''
-  if (wxLoginStore.qrCode.startsWith('data:'))
-    return wxLoginStore.qrCode
-  if (wxLoginStore.qrCode.startsWith('http'))
-    return wxLoginStore.qrCode
-  return `data:image/png;base64,${wxLoginStore.qrCode}`
-})
+// 后端返回的是二维码 JPEG 二进制，store 通过 URL.createObjectURL 生成 blob: 链接，
+// 可直接作为 <img src> 使用；此处仅做透传，避免误判为 base64。
+const qrImageSrc = computed(() => wxLoginStore.qrCode || '')
 
 // 状态样式
 const statusClass = computed(() => {

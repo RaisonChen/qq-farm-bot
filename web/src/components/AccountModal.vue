@@ -369,15 +369,9 @@ async function submitManual() {
   await addAccount(payload)
 }
 
-const wxQrImageSrc = computed(() => {
-  if (!wxLoginStore.qrCode)
-    return ''
-  if (wxLoginStore.qrCode.startsWith('data:'))
-    return wxLoginStore.qrCode
-  if (wxLoginStore.qrCode.startsWith('http'))
-    return wxLoginStore.qrCode
-  return `data:image/png;base64,${wxLoginStore.qrCode}`
-})
+// 后端返回的是二维码 JPEG 二进制，store 通过 URL.createObjectURL 生成 blob: 链接，
+// 可直接作为 <img src> 使用；此处仅做透传，避免误判为 base64。
+const wxQrImageSrc = computed(() => wxLoginStore.qrCode || '')
 
 function close() {
   stopWxCheck()
@@ -395,6 +389,7 @@ watch(() => props.show, (newVal) => {
     captureAccountName.value = props.editData?.name || ''
     captureHelpMode.value = localStorage.getItem(CAPTURE_SUCCESS_STORAGE_KEY) === '1' ? 'daily' : 'first'
     void loadCaptureConfig()
+    void wxLoginStore.loadConfigFromServer()
     if (props.editData) {
       activeTab.value = 'manual'
       form.name = props.editData.name || ''

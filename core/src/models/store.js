@@ -252,10 +252,6 @@ const DEFAULT_PLANT_BLACKLIST = [20002, 26739, 20059, 20065, 20064, 20060, 20061
 /** 默认账号配置 */
 const DEFAULT_ACCOUNT_CONFIG = {
     automation: DEFAULT_AUTOMATION,
-    autoCodeRefresh: {
-        enabled: false,
-        intervalMinutes: 60
-    },
     plantingStrategy: 'max_exp',
     preferredSeedId: 0,
     prioritize2x2Crops: false,
@@ -452,10 +448,6 @@ function cloneAccountConfig(config = DEFAULT_ACCOUNT_CONFIG) {
     return {
         ...config,
         automation: auto,
-        autoCodeRefresh: {
-            enabled: config.autoCodeRefresh && config.autoCodeRefresh.enabled === true,
-            intervalMinutes: Math.max(1, Math.min(1440, Number(config.autoCodeRefresh && config.autoCodeRefresh.intervalMinutes) || 60))
-        },
         intervals: { ...config.intervals || DEFAULT_ACCOUNT_CONFIG.intervals },
         friendQuietHours: { ...config.friendQuietHours || DEFAULT_ACCOUNT_CONFIG.friendQuietHours },
         knownFriendGids,
@@ -556,14 +548,6 @@ function normalizeAccountConfig(raw, fallbackConfig = accountFallbackConfig) {
                 cfg.automation[key] = !!value;
             }
         }
-    }
-
-    // 自动刷新 Code
-    if (input.autoCodeRefresh && typeof input.autoCodeRefresh === 'object') {
-        cfg.autoCodeRefresh = {
-            enabled: input.autoCodeRefresh.enabled === true,
-            intervalMinutes: Math.max(1, Math.min(1440, Number(input.autoCodeRefresh.intervalMinutes) || 60))
-        };
     }
 
     // 种植策略
@@ -681,7 +665,6 @@ function pickDefaultPlanConfig(raw) {
     const cfg = normalizeAccountConfig(raw, DEFAULT_ACCOUNT_CONFIG);
     return {
         automation: { ...cfg.automation },
-        autoCodeRefresh: { ...cfg.autoCodeRefresh },
         plantingStrategy: cfg.plantingStrategy,
         preferredSeedId: cfg.preferredSeedId,
         prioritize2x2Crops: cfg.prioritize2x2Crops === true,
@@ -863,10 +846,6 @@ function loadGlobalConfig() {
         if (data.globalWxConfig && typeof data.globalWxConfig === 'object') {
             globalConfig.globalWxConfig = {
                 enabled: data.globalWxConfig.enabled !== false,
-                apiBase: String(data.globalWxConfig.apiBase || 'https://code.z74d.top/api').trim(),
-                apiKey: String(data.globalWxConfig.apiKey || '').trim(),
-                proxyApiUrl: String(data.globalWxConfig.proxyApiUrl || 'https://code.z74d.top/api').trim(),
-                appId: String(data.globalWxConfig.appId || 'wx5306c5978fdb76e4').trim(),
                 autoAddAccount: data.globalWxConfig.autoAddAccount !== false,
                 userIsolation: data.globalWxConfig.userIsolation !== false
             };
@@ -1028,7 +1007,6 @@ function getConfigSnapshot(accountId) {
     const ui = { ...globalConfig.ui };
     return {
         automation: auto,
-        autoCodeRefresh: { ...cfg.autoCodeRefresh },
         plantingStrategy: cfg.plantingStrategy,
         preferredSeedId: cfg.preferredSeedId,
         prioritize2x2Crops: cfg.prioritize2x2Crops === true,
@@ -1072,13 +1050,6 @@ function applyConfigSnapshot(patch = {}, opts = {}) {
                 cfg.automation[key] = !!value;
             }
         }
-    }
-
-    if (patch.autoCodeRefresh && typeof patch.autoCodeRefresh === 'object') {
-        cfg.autoCodeRefresh = {
-            enabled: patch.autoCodeRefresh.enabled === true,
-            intervalMinutes: Math.max(1, Math.min(1440, Number(patch.autoCodeRefresh.intervalMinutes) || 60))
-        };
     }
 
     if (patch.plantingStrategy && ALLOWED_PLANTING_STRATEGIES.includes(patch.plantingStrategy)) {
@@ -1180,25 +1151,6 @@ function setAutomation(key, value, accountId) {
         patch.friendBadRetryDate = '';
     }
     return applyConfigSnapshot(patch, { accountId });
-}
-
-function getAutoCodeRefresh(accountId) {
-    const cfg = getAccountConfigSnapshot(accountId).autoCodeRefresh || DEFAULT_ACCOUNT_CONFIG.autoCodeRefresh;
-    return {
-        enabled: cfg.enabled === true,
-        intervalMinutes: Math.max(1, Math.min(1440, Number(cfg.intervalMinutes) || 60))
-    };
-}
-
-function setAutoCodeRefresh(accountId, config) {
-    const data = config && typeof config === 'object' ? config : {};
-    const result = applyConfigSnapshot({
-        autoCodeRefresh: {
-            enabled: data.enabled === true,
-            intervalMinutes: data.intervalMinutes
-        }
-    }, { accountId });
-    return result.autoCodeRefresh;
 }
 
 function isAutomationOn(key, accountId) {
@@ -1653,10 +1605,6 @@ function setLoginLinks(config) {
 
 const DEFAULT_WX_CONFIG = {
     enabled: false,
-    apiBase: 'https://code.z74d.top/api',
-    apiKey: '',
-    proxyApiUrl: 'https://code.z74d.top/api',
-    appId: 'wx5306c5978fdb76e4',
     autoAddAccount: true,
     userIsolation: true
 };
@@ -1671,10 +1619,6 @@ function setGlobalWxConfig(config) {
     if (!config || typeof config !== 'object') return null;
     globalConfig.globalWxConfig = {
         enabled: config.enabled !== false,
-        apiBase: String(config.apiBase || DEFAULT_WX_CONFIG.apiBase).trim(),
-        apiKey: String(config.apiKey || '').trim(),
-        proxyApiUrl: String(config.proxyApiUrl || DEFAULT_WX_CONFIG.proxyApiUrl).trim(),
-        appId: String(config.appId || DEFAULT_WX_CONFIG.appId).trim(),
         autoAddAccount: config.autoAddAccount !== false,
         userIsolation: config.userIsolation !== false
     };
@@ -1839,8 +1783,6 @@ module.exports = {
     applyConfigSnapshot,
     getAutomation,
     setAutomation,
-    getAutoCodeRefresh,
-    setAutoCodeRefresh,
     isAutomationOn,
     getPreferredSeed,
     getPlantingStrategy,

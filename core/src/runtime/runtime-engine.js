@@ -6,7 +6,6 @@ const store = require('../models/store');
 const { updateRuntimeConfig } = require('../config/config');
 const { sendPushooMessage, sendSmtpEmail } = require('../services/push');
 const { MiniProgramLoginSession } = require('../services/qrlogin');
-const { createAutoCodeRefreshService } = require('./auto-code-refresh');
 const { createDataProvider } = require('./data-provider');
 const { createReloginReminderService } = require('./relogin-reminder');
 const { createRuntimeState } = require('./runtime-state');
@@ -78,15 +77,6 @@ function createRuntimeEngine(options = {}) {
     });
     const { getOfflineAutoDeleteMs, triggerOfflineReminder } = reloginReminder;
 
-    const autoCodeRefresh = createAutoCodeRefreshService({
-        store,
-        getAccounts: store.getAccounts,
-        addOrUpdateAccount: store.addOrUpdateAccount,
-        resolveWorkerControls: () => engine,
-        log,
-        addAccountLog
-    });
-
     // 创建 Worker 管理器
     const {
         startWorker,
@@ -140,9 +130,7 @@ function createRuntimeEngine(options = {}) {
         broadcastConfigToWorkers,
         startWorker,
         stopWorker,
-        restartWorker,
-        scheduleAutoCodeRefresh: autoCodeRefresh.scheduleAccount,
-        refreshAccountCode: autoCodeRefresh.refreshAccountCode
+        restartWorker
     };
     const dataProvider = createDataProvider(dataProviderDeps);
 
@@ -205,7 +193,6 @@ function createRuntimeEngine(options = {}) {
         if (shouldAutoStart) {
             startAllAccounts();
         }
-        autoCodeRefresh.rescheduleAll();
     }
 
     /** 停止所有账号 */

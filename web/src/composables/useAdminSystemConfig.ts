@@ -10,10 +10,6 @@ export interface SystemConfig {
 
 export interface WxConfig {
   enabled: boolean
-  apiBase: string
-  apiKey: string
-  proxyApiUrl: string
-  appId: string
   autoAddAccount: boolean
   userIsolation: boolean
 }
@@ -48,10 +44,6 @@ const defaultSystemConfigValues: SystemConfig = {
 
 const defaultWxConfig: WxConfig = {
   enabled: true,
-  apiBase: 'https://code.z74d.top/api',
-  apiKey: '',
-  proxyApiUrl: 'https://code.z74d.top/api',
-  appId: 'wx5306c5978fdb76e4',
   autoAddAccount: true,
   userIsolation: true,
 }

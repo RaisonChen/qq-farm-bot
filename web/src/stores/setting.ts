@@ -77,11 +77,6 @@ export interface UIConfig {
   theme?: string
 }
 
-export interface AutoCodeRefreshConfig {
-  enabled: boolean
-  intervalMinutes: number
-}
-
 export interface SettingsState {
   plantingStrategy: string
   preferredSeedId: number
@@ -93,7 +88,6 @@ export interface SettingsState {
   intervals: IntervalsConfig
   friendQuietHours: FriendQuietHoursConfig
   automation: AutomationConfig
-  autoCodeRefresh: AutoCodeRefreshConfig
   ui: UIConfig
   offlineReminder: OfflineConfig
   stealDelaySeconds: number
@@ -127,13 +121,6 @@ function createDefaultOfflineReminder(): OfflineConfig {
   }
 }
 
-function createDefaultAutoCodeRefresh(): AutoCodeRefreshConfig {
-  return {
-    enabled: false,
-    intervalMinutes: 60,
-  }
-}
-
 function normalizeOfflineReminder(input: Partial<OfflineConfig> | null | undefined): OfflineConfig {
   return {
     ...createDefaultOfflineReminder(),
@@ -153,7 +140,6 @@ export const useSettingStore = defineStore('setting', () => {
     intervals: {},
     friendQuietHours: { enabled: false, start: '23:00', end: '07:00' },
     automation: {},
-    autoCodeRefresh: createDefaultAutoCodeRefresh(),
     ui: {},
     offlineReminder: createDefaultOfflineReminder(),
     stealDelaySeconds: 0,
@@ -188,7 +174,6 @@ export const useSettingStore = defineStore('setting', () => {
       intervals: {},
       friendQuietHours: { enabled: false, start: '23:00', end: '07:00' },
       automation: {},
-      autoCodeRefresh: createDefaultAutoCodeRefresh(),
       ui: {},
       offlineReminder: createDefaultOfflineReminder(),
       stealDelaySeconds: 0,
@@ -225,10 +210,6 @@ export const useSettingStore = defineStore('setting', () => {
         settings.value.intervals = d.intervals || {}
         settings.value.friendQuietHours = d.friendQuietHours || { enabled: false, start: '23:00', end: '07:00' }
         settings.value.automation = d.automation || {}
-        settings.value.autoCodeRefresh = {
-          ...createDefaultAutoCodeRefresh(),
-          ...(d.autoCodeRefresh || {}),
-        }
         settings.value.ui = d.ui || {}
         settings.value.autoAcceptFriendMinLevel = d.autoAcceptFriendMinLevel ?? 0
         settings.value.offlineReminder = normalizeOfflineReminder(d.offlineReminder)
@@ -266,7 +247,6 @@ export const useSettingStore = defineStore('setting', () => {
         bagSeedKnownIds: newSettings.bagSeedKnownIds ?? [],
         bagSeedFallbackStrategy: newSettings.bagSeedFallbackStrategy ?? 'level',
         autoAcceptFriendMinLevel: newSettings.autoAcceptFriendMinLevel ?? 0,
-        autoCodeRefresh: newSettings.autoCodeRefresh,
         intervals: newSettings.intervals,
         friendQuietHours: newSettings.friendQuietHours,
         stealDelaySeconds: newSettings.stealDelaySeconds ?? 0,
@@ -314,47 +294,6 @@ export const useSettingStore = defineStore('setting', () => {
     }
   }
 
-  async function saveAutoCodeRefresh(accountId: string, config: AutoCodeRefreshConfig) {
-    if (!accountId)
-      return { ok: false, error: '未选择账号' }
-    loading.value = true
-    try {
-      const { data } = await api.post('/api/settings/auto-code-refresh', config, {
-        headers: { 'x-account-id': accountId },
-      })
-      if (data && data.ok) {
-        settings.value.autoCodeRefresh = {
-          ...createDefaultAutoCodeRefresh(),
-          ...(data.data?.autoCodeRefresh || config),
-        }
-        return { ok: true }
-      }
-      return { ok: false, error: data?.error || '保存失败' }
-    }
-    catch (e: any) {
-      return { ok: false, error: e.response?.data?.error || e.message }
-    }
-    finally {
-      loading.value = false
-    }
-  }
-
-  async function runAutoCodeRefresh(accountId: string) {
-    if (!accountId)
-      return { ok: false, error: '未选择账号' }
-    try {
-      const { data } = await api.post('/api/settings/auto-code-refresh/run', {}, {
-        headers: { 'x-account-id': accountId },
-      })
-      if (data && data.ok)
-        return { ok: true }
-      return { ok: false, error: data?.error || '刷新失败' }
-    }
-    catch (e: any) {
-      return { ok: false, error: e.response?.data?.error || e.message }
-    }
-  }
-
   return {
     settings,
     loading,
@@ -362,7 +301,5 @@ export const useSettingStore = defineStore('setting', () => {
     fetchSettings,
     saveSettings,
     saveOfflineConfig,
-    saveAutoCodeRefresh,
-    runAutoCodeRefresh,
   }
 })

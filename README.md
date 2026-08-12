@@ -106,6 +106,7 @@ pnpm build:web
 pnpm dev:core
 ```
 
+git pull
 启动后访问：
 
 - 本机：`http://localhost:3007`

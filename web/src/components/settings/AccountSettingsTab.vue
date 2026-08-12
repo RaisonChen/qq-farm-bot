@@ -20,14 +20,12 @@ defineProps<{
   accountToDelete: any
   showClearStoppedConfirm: boolean
   clearStoppedLoading: boolean
-  refreshWxCodesLoading: boolean
   defaultPlanApplyingId: string
 }>()
 
 const emit = defineEmits<{
   add: []
   clearStopped: []
-  refreshWxCodes: []
   select: [account: any]
   toggle: [account: any]
   settings: [account: any]
@@ -60,17 +58,6 @@ function accountAvatar(acc: any) {
         账号管理
       </h3>
       <div class="flex flex-wrap gap-2">
-        <BaseButton
-          variant="outline"
-          size="sm"
-          :loading="refreshWxCodesLoading"
-          :disabled="accountsLoading || accounts.length === 0"
-          @click="emit('refreshWxCodes')"
-        >
-          <div class="i-carbon-renew mr-2" />
-          <span class="hidden sm:inline">{{ userIsAdmin ? '刷新全部微信Code' : '刷新我的微信Code' }}</span>
-          <span class="sm:hidden">刷新Code</span>
-        </BaseButton>
         <BaseButton
           v-if="userIsAdmin"
           variant="secondary"

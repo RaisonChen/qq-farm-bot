@@ -23,9 +23,7 @@ function createDataProvider(deps) {
         broadcastConfigToWorkers,
         startWorker,
         stopWorker,
-        restartWorker,
-        scheduleAutoCodeRefresh,
-        refreshAccountCode
+        restartWorker
     } = deps;
 
     /** 获取账号列表 */
@@ -220,7 +218,6 @@ function createDataProvider(deps) {
                 prioritize2x2Crops: s.prioritize2x2Crops,
                 intervals: s.intervals,
                 friendQuietHours: s.friendQuietHours,
-                autoCodeRefresh: s.autoCodeRefresh,
                 stealDelaySeconds: s.stealDelaySeconds,
                 plantOrderRandom: s.plantOrderRandom,
                 plantDelaySeconds: s.plantDelaySeconds,
@@ -239,16 +236,12 @@ function createDataProvider(deps) {
             store.applyConfigSnapshot(patch, { accountId: id });
             const rev = nextConfigRevision();
             broadcastConfigToWorkers(id);
-            if (s.autoCodeRefresh && typeof scheduleAutoCodeRefresh === 'function') {
-                scheduleAutoCodeRefresh(id);
-            }
             return {
                 strategy: store.getPlantingStrategy(id),
                 preferredSeed: store.getPreferredSeed(id),
                 prioritize2x2Crops: store.getPrioritize2x2Crops(id),
                 intervals: store.getIntervals(id),
                 friendQuietHours: store.getFriendQuietHours(id),
-                autoCodeRefresh: store.getAutoCodeRefresh(id),
                 stealDelaySeconds: store.getStealDelaySeconds(id),
                 plantOrderRandom: store.getPlantOrderRandom(id),
                 plantDelaySeconds: store.getPlantDelaySeconds(id),
@@ -264,22 +257,6 @@ function createDataProvider(deps) {
                 bagSeedFallbackStrategy: store.getBagSeedFallbackStrategy(id),
                 configRevision: rev
             };
-        },
-
-        saveAutoCodeRefresh: async (ref, config) => {
-            const id = resolveAccountId(ref);
-            if (!id) throw new Error('Missing x-account-id');
-            const data = store.setAutoCodeRefresh(id, config || {});
-            if (typeof scheduleAutoCodeRefresh === 'function') scheduleAutoCodeRefresh(id);
-            return { autoCodeRefresh: data };
-        },
-
-        refreshAccountCode: async (ref) => {
-            const id = resolveAccountId(ref);
-            if (!id) throw new Error('Missing x-account-id');
-            if (typeof refreshAccountCode !== 'function') throw new Error('自动刷新服务不可用');
-            const ok = await refreshAccountCode(id, 'manual');
-            return { ok };
         },
 
         setUITheme: async (theme) => {

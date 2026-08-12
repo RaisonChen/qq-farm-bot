@@ -109,7 +109,6 @@ const {
   accountToDelete,
   showClearStoppedConfirm,
   clearStoppedLoading,
-  refreshWxCodesLoading,
   stoppedAccountsCount,
   isAddAccountDisabled,
   addAccountDisabledReason,
@@ -122,7 +121,6 @@ const {
   handleDelete,
   confirmDelete,
   toggleAccount,
-  refreshWxCodesNow,
   handleSaved,
   selectAccount,
   openClearStoppedConfirm,
@@ -131,14 +129,11 @@ const {
 
 const {
   localAutomationSettings,
-  localAutoCodeRefresh,
   automationSaving,
-  autoCodeRefreshing,
   fertilizerLandTypeOptions,
   fertilizerOptions,
   syncLocalAutomationSettings,
   saveAutomationSettings,
-  runAutoCodeRefreshNow,
 } = useAutomationSettings({
   currentAccountId,
   showAlert,
@@ -268,11 +263,9 @@ onMounted(async () => {
           :account-to-delete="accountToDelete"
           :show-clear-stopped-confirm="showClearStoppedConfirm"
           :clear-stopped-loading="clearStoppedLoading"
-          :refresh-wx-codes-loading="refreshWxCodesLoading"
           :default-plan-applying-id="defaultPlanApplyingId"
           @add="openAddModal"
           @clear-stopped="openClearStoppedConfirm"
-          @refresh-wx-codes="refreshWxCodesNow"
           @select="selectAccount"
           @toggle="toggleAccount"
           @settings="openSettings"
@@ -315,15 +308,12 @@ onMounted(async () => {
         <AutomationSettingsTab
           v-else-if="activeTab === 'automation'"
           v-model:settings="localAutomationSettings"
-          v-model:auto-code-refresh="localAutoCodeRefresh"
           :current-account-name="currentAccountName"
           :current-account-id="currentAccountId"
           :loading="settingsLoading"
           :saving="automationSaving"
-          :auto-code-refreshing="autoCodeRefreshing"
           :fertilizer-land-type-options="fertilizerLandTypeOptions"
           :fertilizer-options="fertilizerOptions"
-          @run-auto-code-refresh="runAutoCodeRefreshNow"
           @save="saveAutomationSettings"
         />
 

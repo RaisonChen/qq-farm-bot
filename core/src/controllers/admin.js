@@ -52,7 +52,6 @@ const { registerAdminLoginLogRoutes } = require("./admin-login-log-routes");
 const {
   registerAdminPlantBlacklistRoutes,
 } = require("./admin-plant-blacklist-routes");
-const { registerAdminProxyRoutes } = require("./admin-proxy-routes");
 const { registerAdminPublicInfoRoutes } = require("./admin-public-info-routes");
 const { registerAdminQrLoginRoutes } = require("./admin-qr-login-routes");
 const { createAdminRouteHelpers } = require("./admin-route-helpers");
@@ -62,6 +61,7 @@ const { createAdminSessionManager } = require("./admin-session-manager");
 const { registerAdminSuperAdminRoutes } = require("./admin-super-admin-routes");
 const { registerAdminSystemRoutes } = require("./admin-system-routes");
 const { registerAdminUserRoutes } = require("./admin-user-routes");
+const { registerAdminWxLoginRoutes } = require("./admin-wx-login-routes");
 const userStore = require("../models/user-store");
 
 const adminLogger = createModuleLogger("admin");
@@ -74,7 +74,6 @@ const PUBLIC_API_PATHS = new Set([
   "/login",
   "/qr/create",
   "/qr/check",
-  "/proxy",
   "/card-claim/status",
   "/card-claim/claim",
   "/game-version",
@@ -140,7 +139,7 @@ function configureCorsMiddleware(expressApp) {
     res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS, PUT");
     res.header(
       "Access-Control-Allow-Headers",
-      "Content-Type, x-account-id, x-admin-token, x-proxy-api-key, x-proxy-api-url, x-proxy-app-id",
+      "Content-Type, x-account-id, x-admin-token",
     );
     res.header("Access-Control-Allow-Credentials", "true");
     res.header("Access-Control-Max-Age", "86400");
@@ -554,7 +553,7 @@ function startAdminServer(dataProvider) {
     sendProviderError,
   });
   registerAdminQrLoginRoutes({ app });
-  registerAdminProxyRoutes({ app, logger: adminLogger });
+  registerAdminWxLoginRoutes({ app, store });
   registerAdminLoginLogRoutes({
     app,
     userStore,

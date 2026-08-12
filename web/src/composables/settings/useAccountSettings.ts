@@ -20,7 +20,6 @@ export function useAccountSettings(showAlert: (message: string, type?: AlertType
   const accountToDelete = ref<any>(null)
   const showClearStoppedConfirm = ref(false)
   const clearStoppedLoading = ref(false)
-  const refreshWxCodesLoading = ref(false)
 
   const userIsAdmin = computed(() => userStore.isAdmin)
   const isAccountOpsDisabled = computed(() => !userStore.isAdmin && userStore.isExpired)
@@ -111,35 +110,6 @@ export function useAccountSettings(showAlert: (message: string, type?: AlertType
     }
   }
 
-  async function refreshWxCodesNow() {
-    if (refreshWxCodesLoading.value)
-      return
-
-    refreshWxCodesLoading.value = true
-    try {
-      const result = await accountStore.refreshWxCodes()
-      const data = result.data
-      if (!result.ok) {
-        if (data && data.total > 0) {
-          showAlert(`微信 Code 刷新完成：成功 ${data.success} 个，失败 ${data.failed} 个`, 'danger')
-        }
-        else {
-          showAlert(result.error || '没有可刷新的微信账号', 'danger')
-        }
-        return
-      }
-
-      const skippedText = data && data.skipped > 0 ? `，跳过 ${data.skipped} 个非微信账号` : ''
-      showAlert(`微信 Code 刷新完成：成功 ${data?.success || 0} 个${skippedText}`, 'primary')
-    }
-    catch (error: any) {
-      showAlert(error.response?.data?.error || error.message || '刷新微信 Code 失败', 'danger')
-    }
-    finally {
-      refreshWxCodesLoading.value = false
-    }
-  }
-
   function handleSaved() {
     accountStore.fetchAccounts()
   }
@@ -194,7 +164,6 @@ export function useAccountSettings(showAlert: (message: string, type?: AlertType
     accountToDelete,
     showClearStoppedConfirm,
     clearStoppedLoading,
-    refreshWxCodesLoading,
     stoppedAccountsCount,
     isAddAccountDisabled,
     addAccountDisabledReason,
@@ -207,7 +176,6 @@ export function useAccountSettings(showAlert: (message: string, type?: AlertType
     handleDelete,
     confirmDelete,
     toggleAccount,
-    refreshWxCodesNow,
     handleSaved,
     selectAccount,
     openClearStoppedConfirm,

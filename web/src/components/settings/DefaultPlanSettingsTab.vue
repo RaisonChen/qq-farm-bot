@@ -45,7 +45,6 @@ let draggedSeedId: number | null = null
 
 const strategySettings = ref(createStrategySettings())
 const automationSettings = ref(createAutomationSettings())
-const autoCodeRefresh = ref({ enabled: false, intervalMinutes: 60 })
 
 function createStrategySettings() {
   return {
@@ -121,10 +120,6 @@ function applyPlan(data: any) {
     ...config,
     automation: { ...automationDefaults.automation, ...(config.automation || {}) },
   }
-  autoCodeRefresh.value = {
-    enabled: config.autoCodeRefresh?.enabled === true,
-    intervalMinutes: Number(config.autoCodeRefresh?.intervalMinutes) || 60,
-  }
 }
 
 const sortedBagSeeds = computed(() => {
@@ -149,7 +144,6 @@ function buildConfig() {
   return {
     ...strategySettings.value,
     ...automationSettings.value,
-    autoCodeRefresh: autoCodeRefresh.value,
   }
 }
 
@@ -360,13 +354,10 @@ onMounted(fetchPlan)
     <AutomationSettingsTab
       v-else
       v-model:settings="automationSettings"
-      v-model:auto-code-refresh="autoCodeRefresh"
       current-account-id="default-plan"
       :current-account-name="null"
       :loading="false"
       :saving="saving"
-      :auto-code-refreshing="false"
-      :show-run-auto-code-refresh="false"
       title="默认自动控制"
       save-label="保存默认方案"
       :fertilizer-land-type-options="fertilizerLandTypeOptions"

@@ -15,10 +15,6 @@ function isAdminUser(user) {
   return user && (user.role === "admin" || user.role === "super_admin");
 }
 
-function hasWxRefreshIdentity(account) {
-  return !!String((account && account.wxid) || "").trim();
-}
-
 function registerAdminAccountRoutes({
   app,
   provider,
@@ -53,70 +49,6 @@ function registerAdminAccountRoutes({
         data = { accounts: [], nextId: 1 };
       }
       res.json({ ok: true, data });
-    } catch (error) {
-      res.status(500).json({ ok: false, error: error.message });
-    }
-  });
-
-  app.post("/api/accounts/refresh-wx-codes", async (req, res) => {
-    try {
-      const currentUser = req.currentUser;
-      if (!currentUser) {
-        return res.status(401).json({ ok: false, error: "未登录" });
-      }
-      if (!provider || typeof provider.refreshAccountCode !== "function") {
-        return res.status(500).json({ ok: false, error: "自动刷新服务不可用" });
-      }
-
-      const allAccounts = getAccountsForUser();
-      const accessibleAccounts = isAdminUser(currentUser)
-        ? allAccounts
-        : allAccounts.filter(
-            (account) => account && account.username === currentUser.username,
-          );
-      const targetAccounts = accessibleAccounts.filter(hasWxRefreshIdentity);
-
-      if (targetAccounts.length === 0) {
-        return res.json({
-          ok: false,
-          error: "没有可刷新的微信账号",
-          data: { total: 0, success: 0, failed: 0, skipped: accessibleAccounts.length },
-        });
-      }
-
-      const results = [];
-      for (const account of targetAccounts) {
-        try {
-          const result = await provider.refreshAccountCode(account.id);
-          const success = result && result.ok !== false;
-          results.push({
-            accountId: account.id,
-            name: account.name || account.nick || account.id,
-            ok: success,
-            error: success ? "" : "刷新失败",
-          });
-        } catch (error) {
-          results.push({
-            accountId: account.id,
-            name: account.name || account.nick || account.id,
-            ok: false,
-            error: error.message || "刷新失败",
-          });
-        }
-      }
-
-      const success = results.filter((item) => item.ok).length;
-      const failed = results.length - success;
-      res.json({
-        ok: failed === 0,
-        data: {
-          total: results.length,
-          success,
-          failed,
-          skipped: accessibleAccounts.length - targetAccounts.length,
-          results,
-        },
-      });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message });
     }
