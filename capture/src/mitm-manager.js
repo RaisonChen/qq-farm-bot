@@ -25,7 +25,19 @@ class MitmManager {
   }
 
   isRunning(sessionId) {
-    return this.proxies.has(String(sessionId || ""));
+    const entry = this.proxies.get(String(sessionId || ""));
+    return Boolean(entry && !entry.exited);
+  }
+
+  // 子进程异常退出时移除对应记录，避免后续启动被旧记录误判为仍在运行。
+  markExited(sessionId, entry, exitError = "") {
+    const id = String(sessionId || "").trim();
+    entry.exited = true;
+    if (exitError && !entry.exitError) entry.exitError = exitError;
+    if (this.proxies.get(id) === entry) {
+      this.proxies.delete(id);
+      this.clearStopTimer(id);
+    }
   }
 
   // 取消某会话挂起的延迟停止（例如同名会话被重新启动，或需要保持代理）。
@@ -100,17 +112,17 @@ class MitmManager {
 
     const entry = { proc, port, exited: false, exitError: "" };
     proc.on("error", (error) => {
-      entry.exited = true;
-      entry.exitError = error.code === "ENOENT"
+      const exitError = error.code === "ENOENT"
         ? `未找到 mitmdump 可执行文件（${this.config.mitmdumpBin}），请先安装 mitmproxy`
         : error.message;
+      this.markExited(id, entry, exitError);
       logger.error("mitmdump 启动失败", { sessionId: id, error: entry.exitError });
     });
     proc.on("exit", (code, signal) => {
-      entry.exited = true;
-      if (!entry.exitError && code && code !== 0) {
-        entry.exitError = `mitmdump 退出（code=${code}${signal ? `, signal=${signal}` : ""}）`;
-      }
+      const exitError = code && code !== 0
+        ? `mitmdump 退出（code=${code}${signal ? `, signal=${signal}` : ""}）`
+        : "";
+      this.markExited(id, entry, exitError);
       logger.info("mitmdump 退出", { sessionId: id, code, signal });
     });
 

@@ -89,6 +89,17 @@ test("start cancels a pending delayed stop for the same session", () => {
   assert.equal(mitm.stopTimers.has(id), false, "start 应清除同名会话的挂起延迟停止");
 });
 
+test("markExited removes a stale proxy entry so the session can start again", () => {
+  const id = "exited-proxy";
+  const { mitm, entry } = managerWithFakeProxy(id);
+
+  mitm.markExited(id, entry, "mitmdump 退出（code=1）");
+
+  assert.equal(mitm.isRunning(id), false, "退出后的代理不能再被视为运行中");
+  assert.equal(mitm.proxies.has(id), false, "退出后的代理记录应被清除");
+  assert.equal(entry.exitError, "mitmdump 退出（code=1）");
+});
+
 test("scheduleStop on unknown session is a no-op", () => {
   const mitm = new MitmManager({ proxyGraceMs: 120 });
   let stoppedCalled = false;

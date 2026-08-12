@@ -38,6 +38,11 @@ CALLBACK_TOKEN = os.environ.get("CAPTURE_CALLBACK_TOKEN", "")
 SESSION_ID = os.environ.get("CAPTURE_SESSION_ID", "")
 MODE = os.environ.get("CAPTURE_MODE", "qq")
 
+# 已回传的 payload 指纹，用于本地去重。同一个 code 可能被 request/response/websocket
+# 三个钩子各命中一次，这里避免重复上报（Node 服务端也有二次去重，双保险）。
+_SENT_PAYLOADS = set()
+_SENT_LOCK = threading.Lock()
+
 # 登录 code 通常出现在腾讯登录/小游戏鉴权相关的请求里。
 # 这里用宽松的关键字匹配 host + path，再从 body/query 中提取字段。
 LOGIN_HOST_HINTS = (
@@ -107,12 +112,27 @@ def _post_back(payload):
 
     回传对整个抓包成败至关重要：只要 Node 侧收到一次 code，就会落盘保存。
     因此这里带指数退避重试，避免因 Node 短暂繁忙/重启窗口而永久丢失 code。
+
+    本地去重：完全相同的 payload 指纹已上报过则直接跳过，减少冗余回传。
     """
     if not CALLBACK_URL:
         return
     payload = dict(payload)
     payload["sessionId"] = SESSION_ID
     payload["platform"] = MODE
+
+    # 构造指纹：按 key 排序后序列化，保证相同内容指纹一致。
+    try:
+        fingerprint = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    except Exception:
+        fingerprint = str(payload)
+    with _SENT_LOCK:
+        if fingerprint in _SENT_PAYLOADS:
+            return  # 本地已成功上报过相同内容，跳过
+        # 先占坑：即使发送失败（后面会重试），也不让并发线程重复入队同一条。
+        # 若所有重试都真的失败，这次抓取就视为丢失（概率极低，Node 侧还有轮询兜底）。
+        _SENT_PAYLOADS.add(fingerprint)
+
     data = json.dumps(payload).encode("utf-8")
 
     # 有 code 的记录更重要，多重试几次；纯 gid/好友记录少试即可。

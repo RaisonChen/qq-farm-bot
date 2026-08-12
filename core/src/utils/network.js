@@ -15,7 +15,7 @@ const { types } = require('./proto');
 const { toLong, toNum, syncServerTime, log, logWarn } = require('./utils');
 const cryptoWasm = require('./crypto-wasm');
 const { createGatewayToken } = require('./gateway-token');
-const { TsdkRuntime } = require('./tsdk-runtime');
+const { TsdkRuntime, QQ_APP_ID, WX_APP_ID } = require('./tsdk-runtime');
 
 // 延迟加载 warehouse 模块避免循环依赖
 let warehouseModule = null;
@@ -56,8 +56,10 @@ function logAce(level, message) {
 
 function createTsdkRuntime(deviceProtocol) {
     const customDevice = deviceProtocol && deviceProtocol.enabled ? deviceProtocol : null;
+    const appId = CONFIG.platform === 'wx' ? WX_APP_ID : QQ_APP_ID;
     return new TsdkRuntime({
         accountId: process.env.FARM_ACCOUNT_ID,
+        appId,
         gameId: CONFIG.tsdkGameId,
         appKey: CONFIG.tsdkAppKey,
         deviceInfo: {
@@ -672,9 +674,12 @@ let networkStopped = false;
 
 function buildWebSocketHeaders(deviceProtocol) {
     const resourceVersion = String(CONFIG.clientVersion || '').split('_')[0];
+    const isWx = CONFIG.platform === 'wx';
+    const appId = isWx ? WX_APP_ID : QQ_APP_ID;
+    const refererHost = isWx ? 'servicewechat.com' : 'appservice.qq.com';
     const headers = {
         'Origin': 'https://gate-obt.nqf.qq.com',
-        'Referer': `https://appservice.qq.com/1112386029/${resourceVersion}/page-frame.html`,
+        'Referer': `https://${refererHost}/${appId}/${resourceVersion}/page-frame.html`,
     };
     const userAgent = deviceProtocol && deviceProtocol.enabled
         ? String(deviceProtocol.userAgent || '').trim()

@@ -107,7 +107,7 @@ class AceService {
                 10000,
             );
             const reply = this.types.AntiDataReply.decode(body);
-            const serverData = Buffer.from(reply.data || []);
+            const serverData = Buffer.from(reply.result || []);
             if (serverData.length) this.runtime.sendDataFromServer(serverData);
             this.failures = 0;
             this.uploadCount += 1;

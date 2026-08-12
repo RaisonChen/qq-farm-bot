@@ -8,13 +8,16 @@ const { performance } = require('node:perf_hooks');
 
 const { ensureDataDir } = require('../config/runtime-paths');
 
-const OFFICIAL_VERSION = 'v3.8.6.1785240280';
-const OFFICIAL_SHA256 = '8a94a43c9f96a24ca99c46912244ad8d39535944acfa223426c4c51d282e769a';
-const DEFAULT_APP_ID = '1112386029';
+const OFFICIAL_VERSION = 'v3.8.6.1785239995';
+const OFFICIAL_SHA256 = '14754428297ee0d5aa6cceee76e6ef076bdac31ceda0ea2e2bf4a0472c8e717f';
+const QQ_APP_ID = '1112386029';
+const WX_APP_ID = 'wx5306c5978fdb76e4';
+const DEFAULT_APP_ID = QQ_APP_ID;
 const DEFAULT_GAME_ID = 3167;
 const DEFAULT_APP_KEY = '0';
 const OFFICIAL_EXPORTS = {
     memory: 'w',
+    callCtors: 'x',
     createStats: 'y',
     reportUrls: 'z',
     createBuffer: 'A',
@@ -47,7 +50,7 @@ const OFFICIAL_EXPORTS = {
 
 const REQUIRED_EXPORTS = [
     'memory', 'createBuffer', 'destroyBuffer', 'getResult', 'initRuntime',
-    'sendHeartbeatTick', 'getDataToServer', 'sendDataFromServer',
+    'callCtors', 'sendHeartbeatTick', 'getDataToServer', 'sendDataFromServer',
     'generateToken', 'encryptData', 'decryptData',
 ];
 const MERGED_DATA_KEY = 1871261153;
@@ -241,7 +244,7 @@ class TsdkRuntime {
                 k: (ptr, capacity) => runtime.writeBytes(OFFICIAL_RUNTIME_TABLE, ptr, capacity),
                 l: () => 2,
                 m: stringProvider(() => runtime.appId),
-                n: stringProvider(() => DEFAULT_APP_ID),
+                n: stringProvider(() => runtime.appId),
                 o: () => runtime.warnOnce('integrity-functions', 'TSDK mini-program function integrity checks are unavailable in Node.js.'),
                 p: (filePtr) => {
                     try {
@@ -354,9 +357,7 @@ class TsdkRuntime {
                 this.ensureBounds(ptr, length);
                 decryptSegment(ptr, length, MERGED_DATA_KEY);
             }
-            if (typeof instance.exports.__wasm_call_ctors === 'function') {
-                instance.exports.__wasm_call_ctors();
-            }
+            this.exports.callCtors();
 
             const key = this.allocCString(this.appKey);
             try {
@@ -597,4 +598,6 @@ module.exports = {
     OFFICIAL_VERSION,
     OFFICIAL_SHA256,
     OFFICIAL_EXPORTS,
+    QQ_APP_ID,
+    WX_APP_ID,
 };

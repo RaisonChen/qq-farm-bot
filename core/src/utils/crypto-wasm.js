@@ -33,6 +33,46 @@ async function decryptBuffer(buffer) {
     return getRuntime().decrypt(buffer);
 }
 
+async function bindUser(openId) {
+    await initWasm();
+    getRuntime().bindUser(openId);
+}
+
+function getEncryptedInitInfo() {
+    return getRuntime().getEncryptedInitInfo();
+}
+
+function getDataToServer() {
+    return getRuntime().getDataToServer();
+}
+
+function sendDataFromServer(data) {
+    getRuntime().sendDataFromServer(data);
+}
+
+function heartbeatTick() {
+    getRuntime().heartbeatTick();
+}
+
+function processReceivedData() {
+    getRuntime().processReceivedData();
+}
+
+function sendStatus() {
+    getRuntime().sendStatus();
+}
+
+function detectSpeedHack(elapsedMs) {
+    getRuntime().detectSpeedHack(elapsedMs);
+}
+
+function destroyWasm() {
+    if (defaultRuntime) {
+        defaultRuntime.destroy();
+        defaultRuntime = null;
+    }
+}
+
 module.exports = {
     setRuntime,
     getRuntime,
@@ -41,4 +81,13 @@ module.exports = {
     encryptBuffer,
     decryptBuffer,
     encryptData: generateToken,
+    bindUser,
+    getEncryptedInitInfo,
+    getDataToServer,
+    sendDataFromServer,
+    heartbeatTick,
+    processReceivedData,
+    sendStatus,
+    detectSpeedHack,
+    destroyWasm,
 };

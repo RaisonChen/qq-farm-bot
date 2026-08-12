@@ -121,9 +121,16 @@ class CaptureSession {
     const openid = String(record.openid || record.open_id || "").trim();
     let changed = false;
     if (code || gid || openid) {
-      this.codes.push({ code, gid, openid });
-      this.status = code ? "captured" : this.status;
-      changed = true;
+      // 去重：完全相同的 {code, gid, openid} 组合不重复入列。
+      // 抓包脚本可能因 request/response/websocket 三个钩子各命中一次而回传 3 条重复数据。
+      const duplicate = this.codes.some(
+        (item) => item.code === code && item.gid === gid && item.openid === openid,
+      );
+      if (!duplicate) {
+        this.codes.push({ code, gid, openid });
+        this.status = code ? "captured" : this.status;
+        changed = true;
+      }
     }
 
     const friendSource = String(record.friendSource || record.friend_source || "").trim();
