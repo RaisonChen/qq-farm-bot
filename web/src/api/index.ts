@@ -38,6 +38,10 @@ api.interceptors.response.use((response) => {
     return Promise.reject(error)
   }
 
+  if (error?.config?.skipErrorToast) {
+    return Promise.reject(error)
+  }
+
   const toast = useToastStore()
 
   if (error.response) {

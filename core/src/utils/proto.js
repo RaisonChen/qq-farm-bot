@@ -176,6 +176,13 @@ async function loadProto() {
     types.ActivityListReply = root.lookupType('gamepb.activitypb.ListReply');
     types.ActivityStarRecordInfo = root.lookupType('gamepb.activitypb.StarRecordInfo');
     types.ActivityStarRecordClaimResult = root.lookupType('gamepb.activitypb.StarRecordClaimResult');
+    // 青酿活动新协议
+    types.QueryActivityRequest = root.lookupType('gamepb.activitypb.QueryActivityRequest');
+    types.ClaimQingMeiDailySeedRequest = root.lookupType('gamepb.activitypb.ClaimQingMeiDailySeedRequest');
+    types.StartQingMeiBrewRequest = root.lookupType('gamepb.activitypb.StartQingMeiBrewRequest');
+    types.ContinueQingMeiBrewRequest = root.lookupType('gamepb.activitypb.ContinueQingMeiBrewRequest');
+    types.SettleQingMeiBrewRequest = root.lookupType('gamepb.activitypb.SettleQingMeiBrewRequest');
+    types.ActivityOperateReplyNew = root.lookupType('gamepb.activitypb.ActivityOperateReply');
 
     // 好友
     types.GetAllFriendsRequest = root.lookupType('gamepb.friendpb.GetAllRequest');

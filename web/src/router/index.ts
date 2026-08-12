@@ -65,6 +65,11 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   NProgress.start()
 
+  // Mock 模式：URL 含 ?mock=qingmei 时跳过登录验证，用于本地 UI 预览
+  if (to.query?.mock === 'qingmei') {
+    return true
+  }
+
   if (to.name === 'renewal') {
     if (!adminToken.value) {
       validatedToken = ''

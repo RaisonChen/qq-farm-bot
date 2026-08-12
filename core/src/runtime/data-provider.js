@@ -190,6 +190,10 @@ function createDataProvider(deps) {
         claimSolarTermsReward: (ref, termId) => callWorkerApi(resolveAccountId(ref), 'claimSolarTermsReward', termId),
         claimQingmeiSeeds: (ref) => callWorkerApi(resolveAccountId(ref), 'claimQingmeiSeeds'),
         brewAndSellQingmeiWine: (ref, options) => callWorkerApi(resolveAccountId(ref), 'brewAndSellQingmeiWine', options || {}),
+        startQingmeiBrew: (ref, options) => callWorkerApi(resolveAccountId(ref), 'startQingmeiBrew', options || {}),
+        continueQingmeiBrew: (ref, options) => callWorkerApi(resolveAccountId(ref), 'continueQingmeiBrew', options || {}),
+        autoBrewQingmei: (ref, options) => callWorkerApi(resolveAccountId(ref), 'autoBrewQingmei', options || {}),
+        settleQingmeiBrew: (ref, options) => callWorkerApi(resolveAccountId(ref), 'settleQingmeiBrew', options || {}),
 
         // ========== Illustrated ==========
         getIllustratedList: (ref, type, level) => callWorkerApi(resolveAccountId(ref), 'getIllustratedList', type, level),

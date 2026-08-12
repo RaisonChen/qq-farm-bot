@@ -16,6 +16,8 @@ message CheckCanShareReply {
 // --- 报告分享 ---
 message ReportShareRequest {
     bool shared = 1;  // 是否已分享
+    int64 field_1 = 2;   // 活动分享来源 (11=青酿)
+    int64 field_4 = 4;   // 活动分享场景 (215=青酿)
 }
 
 message ReportShareReply {

@@ -287,6 +287,100 @@ function registerAdminHeluActivityRoutes({
       sendProviderError(res, err);
     }
   });
+
+  // ===== 青酿分步操作（开始酿造 / 继续报价 / 结算出售）=====
+
+  app.post("/api/activity/qingmei/wine/start", async (req, res) => {
+    const accountId = getAuthorizedAccountId(req, res, routeContext);
+    if (!accountId) return;
+    try {
+      if (!requireConnectedAccount(res, provider, accountId, "青梅酿启动失败: 账号未运行")) return;
+      const result = await provider.startQingmeiBrew(accountId, req.body || {});
+      res.json({
+        ok: true,
+        ...result,
+      });
+    } catch (err) {
+      if (isQingmeiWineBusinessError(err)) {
+        res.json({
+          ok: false,
+          stage: err?.stage || 'start',
+          error: err?.message || '青梅酿启动失败',
+        });
+        return;
+      }
+      sendProviderError(res, err);
+    }
+  });
+
+  app.post("/api/activity/qingmei/wine/continue", async (req, res) => {
+    const accountId = getAuthorizedAccountId(req, res, routeContext);
+    if (!accountId) return;
+    try {
+      if (!requireConnectedAccount(res, provider, accountId, "青梅酿报价失败: 账号未运行")) return;
+      const result = await provider.continueQingmeiBrew(accountId, req.body || {});
+      res.json({
+        ok: true,
+        ...result,
+      });
+    } catch (err) {
+      if (isQingmeiWineBusinessError(err)) {
+        res.json({
+          ok: false,
+          stage: err?.stage || 'continue',
+          error: err?.message || '青梅酿报价失败',
+        });
+        return;
+      }
+      sendProviderError(res, err);
+    }
+  });
+
+  app.post("/api/activity/qingmei/wine/auto-brew", async (req, res) => {
+    const accountId = getAuthorizedAccountId(req, res, routeContext);
+    if (!accountId) return;
+    try {
+      if (!requireConnectedAccount(res, provider, accountId, "一键酿造失败: 账号未运行")) return;
+      const result = await provider.autoBrewQingmei(accountId, req.body || {});
+      res.json({
+        ok: true,
+        ...result,
+      });
+    } catch (err) {
+      if (isQingmeiWineBusinessError(err)) {
+        res.json({
+          ok: false,
+          stage: err?.stage || 'auto',
+          error: err?.message || '一键酿造失败',
+        });
+        return;
+      }
+      sendProviderError(res, err);
+    }
+  });
+
+  app.post("/api/activity/qingmei/wine/settle", async (req, res) => {
+    const accountId = getAuthorizedAccountId(req, res, routeContext);
+    if (!accountId) return;
+    try {
+      if (!requireConnectedAccount(res, provider, accountId, "青梅酿结算失败: 账号未运行")) return;
+      const result = await provider.settleQingmeiBrew(accountId, req.body || {});
+      res.json({
+        ok: true,
+        ...result,
+      });
+    } catch (err) {
+      if (isQingmeiWineBusinessError(err)) {
+        res.json({
+          ok: false,
+          stage: err?.stage || 'settle',
+          error: err?.message || '青梅酿结算失败',
+        });
+        return;
+      }
+      sendProviderError(res, err);
+    }
+  });
 }
 
 module.exports = { registerAdminHeluActivityRoutes };

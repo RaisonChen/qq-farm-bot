@@ -132,6 +132,7 @@ export interface StarActivityData {
   starSandBalance: number
   passport?: HeluSeasonPassport | null
   solarTerms?: HeluSolarTerms | null
+  qingmei?: QingmeiActivity | null
   warning?: string
 }
 
@@ -140,6 +141,7 @@ export type HeluSubActivityKey = 'giftLotus' | 'shop' | 'journey' | 'notes'
 export interface QingmeiActivity {
   uid: string
   title: string
+  name?: string
   activityId: number
   claimActivityId: number
   claimCommand: number
@@ -155,6 +157,24 @@ export interface QingmeiActivity {
   claimable: boolean
   reward: HeluDrawReward
   material?: HeluDrawReward
+  ingredient?: { itemId: number, itemName: string, image?: string }
+  balance?: number
+  balanceKnown?: boolean
+  started?: boolean
+  currentRound?: number
+  maxRounds?: number
+  basePrice?: number
+  guaranteedPrice?: number
+  quotePrices?: Array<number | string>
+  quoteTotals?: Array<number | string>
+  dailySeed?: { claimed: boolean, grant?: { grantId: number } }
+  actions?: {
+    claimSeed: { enabled: boolean, available?: boolean }
+    start: { enabled: boolean, available?: boolean }
+    continue: { enabled: boolean, available?: boolean }
+    settle: { enabled: boolean, available?: boolean }
+  }
+  rules?: { title: string, paragraphs: string[] }
   warning?: string
 }
 
@@ -163,12 +183,18 @@ export interface QingmeiBrewResult {
   cost: number
   price: number
   canDouble: boolean
+  round?: number
+  unitPrice?: string
+  totalGold?: string
+  doubled?: boolean
 }
 
 export interface QingmeiSellResult {
   multiple: number
   gold: number
   item?: HeluDrawReward
+  rewards?: HeluDrawReward[]
+  shared?: boolean
 }
 
 export interface HeluSubActivity {
@@ -251,6 +277,10 @@ export const useActivityStore = defineStore('activity', () => {
   const starRecordClaimLoading = ref(false)
   const qingmeiClaimLoading = ref(false)
   const qingmeiSellLoading = ref(false)
+  const qingmeiStartLoading = ref(false)
+  const qingmeiContinueLoading = ref(false)
+  const qingmeiAutoBrewLoading = ref(false)
+  const qingmeiSettleLoading = ref(false)
 
   const heluError = ref('')
 
@@ -266,6 +296,10 @@ export const useActivityStore = defineStore('activity', () => {
     starRecordClaimLoading.value = false
     qingmeiClaimLoading.value = false
     qingmeiSellLoading.value = false
+    qingmeiStartLoading.value = false
+    qingmeiContinueLoading.value = false
+    qingmeiAutoBrewLoading.value = false
+    qingmeiSettleLoading.value = false
     heluError.value = ''
   }
 
@@ -413,12 +447,17 @@ export const useActivityStore = defineStore('activity', () => {
     try {
       const { data } = await api.post('/api/activity/qingmei/claim', {}, {
         headers: { 'x-account-id': accountId },
-      })
-      if (isCurrentAccount(requestedId) && data.ok && data.activity) {
-        heluActivity.value = data.activity
-        // 新活动中心不展示青梅活动；保留接口兼容旧调用。
+        skipErrorToast: true,
+      } as any)
+      if (isCurrentAccount(requestedId) && data.ok) {
+        const qingmei = data.qingmei || data.activity?.qingmei
+        if (qingmei && heluActivity.value)
+          heluActivity.value = { ...heluActivity.value, qingmei }
       }
       return data
+    }
+    catch (err: any) {
+      return { ok: false, error: err?.response?.data?.error || err?.message || '领取青梅种子失败' }
     }
     finally {
       qingmeiClaimLoading.value = false
@@ -433,13 +472,115 @@ export const useActivityStore = defineStore('activity', () => {
         share: true,
       }, {
         headers: { 'x-account-id': accountId },
-      })
-      if (isCurrentAccount(requestedId) && data.ok && data.activity)
-        heluActivity.value = data.activity
+        timeout: 120000,
+        skipErrorToast: true,
+      } as any)
+      if (isCurrentAccount(requestedId) && data.ok) {
+        const qingmei = data.qingmei || data.activity?.qingmei
+        if (qingmei && heluActivity.value)
+          heluActivity.value = { ...heluActivity.value, qingmei }
+      }
       return data
+    }
+    catch (err: any) {
+      return { ok: false, error: err?.response?.data?.error || err?.message || '青酿出售失败' }
     }
     finally {
       qingmeiSellLoading.value = false
+    }
+  }
+
+  async function startQingmeiBrew(accountId: string, count = 1) {
+    const requestedId = String(accountId)
+    qingmeiStartLoading.value = true
+    try {
+      const { data } = await api.post('/api/activity/qingmei/wine/start', { count }, {
+        headers: { 'x-account-id': accountId },
+        skipErrorToast: true,
+      } as any)
+      if (isCurrentAccount(requestedId) && data.ok) {
+        const qingmei = data.qingmei
+        if (qingmei && heluActivity.value)
+          heluActivity.value = { ...heluActivity.value, qingmei }
+      }
+      return data
+    }
+    catch (err: any) {
+      return { ok: false, error: err?.response?.data?.error || err?.message || '青梅酿启动失败' }
+    }
+    finally {
+      qingmeiStartLoading.value = false
+    }
+  }
+
+  async function continueQingmeiBrew(accountId: string) {
+    const requestedId = String(accountId)
+    qingmeiContinueLoading.value = true
+    try {
+      const { data } = await api.post('/api/activity/qingmei/wine/continue', {}, {
+        headers: { 'x-account-id': accountId },
+        skipErrorToast: true,
+      } as any)
+      if (isCurrentAccount(requestedId) && data.ok) {
+        const qingmei = data.qingmei
+        if (qingmei && heluActivity.value)
+          heluActivity.value = { ...heluActivity.value, qingmei }
+      }
+      return data
+    }
+    catch (err: any) {
+      return { ok: false, error: err?.response?.data?.error || err?.message || '青梅酿报价失败' }
+    }
+    finally {
+      qingmeiContinueLoading.value = false
+    }
+  }
+
+  async function autoBrewQingmei(accountId: string) {
+    const requestedId = String(accountId)
+    qingmeiAutoBrewLoading.value = true
+    try {
+      const { data } = await api.post('/api/activity/qingmei/wine/auto-brew', {}, {
+        headers: { 'x-account-id': accountId },
+        timeout: 120000,
+        skipErrorToast: true,
+      } as any)
+      if (isCurrentAccount(requestedId) && data.ok) {
+        const qingmei = data.qingmei
+        if (qingmei && heluActivity.value)
+          heluActivity.value = { ...heluActivity.value, qingmei }
+      }
+      return data
+    }
+    catch (err: any) {
+      return { ok: false, error: err?.response?.data?.error || err?.message || '一键酿造失败' }
+    }
+    finally {
+      qingmeiAutoBrewLoading.value = false
+    }
+  }
+
+  async function settleQingmeiBrew(accountId: string, share = true) {
+    const requestedId = String(accountId)
+    qingmeiSettleLoading.value = true
+    try {
+      const { data } = await api.post('/api/activity/qingmei/wine/settle', { share }, {
+        headers: { 'x-account-id': accountId },
+        timeout: 120000,
+        skipErrorToast: true,
+      } as any)
+      if (isCurrentAccount(requestedId) && data.ok) {
+        const qingmei = data.qingmei
+        if (qingmei && heluActivity.value)
+          heluActivity.value = { ...heluActivity.value, qingmei }
+      }
+      return data
+    }
+    catch (err: any) {
+      return { ok: false, error: err?.response?.data?.error || err?.message || '青梅酿结算失败' }
+    }
+    finally {
+      qingmeiSettleLoading.value = false
     }
   }
 
@@ -453,6 +594,10 @@ export const useActivityStore = defineStore('activity', () => {
     starRecordClaimLoading,
     qingmeiClaimLoading,
     qingmeiSellLoading,
+    qingmeiStartLoading,
+    qingmeiContinueLoading,
+    qingmeiAutoBrewLoading,
+    qingmeiSettleLoading,
     heluError,
     clearActivityData,
     fetchHeluActivity,
@@ -464,5 +609,9 @@ export const useActivityStore = defineStore('activity', () => {
     claimHeluSolar,
     claimQingmeiSeeds,
     brewAndSellQingmeiWine,
+    startQingmeiBrew,
+    continueQingmeiBrew,
+    autoBrewQingmei,
+    settleQingmeiBrew,
   }
 })

@@ -1115,6 +1115,26 @@ async function handleApiCall(msg) {
                 result = await brewAndSellQingmeiWine(args[0] || {});
                 break;
             }
+            case 'startQingmeiBrew': {
+                const { startQingmeiBrew } = require('../services/activity');
+                result = await startQingmeiBrew(args[0] || {});
+                break;
+            }
+            case 'continueQingmeiBrew': {
+                const { continueQingmeiBrew } = require('../services/activity');
+                result = await continueQingmeiBrew(args[0] || {});
+                break;
+            }
+            case 'autoBrewQingmei': {
+                const { autoBrewQingmei } = require('../services/activity');
+                result = await autoBrewQingmei(args[0] || {});
+                break;
+            }
+            case 'settleQingmeiBrew': {
+                const { settleQingmeiBrew } = require('../services/activity');
+                result = await settleQingmeiBrew(args[0] || {});
+                break;
+            }
             case 'getIllustratedList': {
                 const { getIllustratedListV2 } = require('../services/illustrated');
                 result = await getIllustratedListV2(args[0], args[1]);

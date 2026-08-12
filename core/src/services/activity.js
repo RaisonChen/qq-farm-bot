@@ -8,7 +8,7 @@
  * - 原始 protobuf 回退解码
  */
 const protobuf = require('protobufjs/minimal');
-const { sendMsgAsync, getUserState, isConnected } = require('../utils/network');
+const { sendMsgAsync, getUserState, isConnected, GatewayError } = require('../utils/network');
 const { types } = require('../utils/proto');
 const { toNum } = require('../utils/utils');
 const { getItemImageById, getItemById } = require('../config/gameConfig');
@@ -20,10 +20,105 @@ const activityLogger = createModuleLogger('activity');
 const HELU_DRAW_REQUEST_GAP_MS = 450;
 const HELU_DRAW_REFRESH_DELAY_MS = 350;
 const QINGMEI_WINE_STEP_DELAY_MS = 1000;
+const QINGMEI_DAILY_ALREADY_CLAIMED_CODE = 1034014;
+const SECONDS_PER_DAY = 86400;
+const BEIJING_UTC_OFFSET_SECONDS = 8 * 60 * 60;
+
+// 写操作串行化（对齐 master 的 serializeMutation），避免并发竞态
+let mutationTail = Promise.resolve();
+function serializeMutation(operation) {
+  const result = mutationTail.then(operation, operation);
+  mutationTail = result.then(() => {}, () => {});
+  return result;
+}
+
+// 北京日期缓存（对齐 master 的 qingMeiSeedClaimedDateKey）
+let qingMeiSeedClaimedDateKey = '';
+function beijingDateKey() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+// 青梅领取状态缓存（按账号记录当日是否已领取）
 const qingmeiClaimedDateByAccount = new Map();
+
+// 将 bytes/string 解析为文本
+function bytesToText(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  try {
+    const buffer = Buffer.from(value);
+    const utf8 = buffer.toString('utf8');
+    if (!utf8.includes('\uFFFD')) return utf8;
+  } catch { /* ignore */ }
+  return String(value || '');
+}
+function plainText(value) {
+  return String(value || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .trim();
+}
+function findStrings(value, output) {
+  if (typeof value === 'string') {
+    const t = plainText(value);
+    if (t) output.push(t);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach(v => findStrings(v, output));
+    return;
+  }
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach(v => findStrings(v, output));
+  }
+}
+// 从 activity.extra 解析规则（对齐 master 的 textContent）
+function parseActivityRules(extra) {
+  const text = bytesToText(extra).trim();
+  if (!text) return { title: '', paragraphs: [] };
+  try {
+    const parsed = JSON.parse(text);
+    const tips = parsed && typeof parsed === 'object' ? parsed.tips : null;
+    const rawParagraphs = tips && Array.isArray(tips.txt) ? tips.txt : [];
+    const paragraphs = rawParagraphs
+      .filter(e => typeof e === 'string')
+      .map(plainText)
+      .filter(Boolean);
+    if (paragraphs.length) {
+      return { title: typeof tips?.title === 'string' ? plainText(tips.title) : '', paragraphs };
+    }
+    const allText = [];
+    findStrings(parsed, allText);
+    return { title: '', paragraphs: Array.from(new Set(allText)) };
+  } catch {
+    return { title: '', paragraphs: [plainText(text)].filter(Boolean) };
+  }
+}
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+// 金币格式化：过万显示为 "X.XX万"，否则用千分位
+function formatGold(value) {
+  const n = Number(value) || 0;
+  if (n >= 10000) {
+    const rounded = Math.round((n / 10000) * 100) / 100;
+    return `${rounded}万`;
+  }
+  return n.toLocaleString();
+}
+
+// 倍率格式化：服务端用 ×10000 表示倍数（10000=1倍，15000=1.5倍）
+function formatMultiplier(value) {
+  const n = Number(value) || 0;
+  const rounded = Math.round((n / 10000) * 100) / 100;
+  return `${rounded}倍`;
 }
 
 function getLocalDateKey() {
@@ -77,9 +172,9 @@ const STAR_SAND_ITEM_ID = 1023;
 const STAR_RECORD_CLAIM_CMD = 21;
 const STAR_SHOP_OPEN_CMD = 7;
 const STAR_SHOP_EXCHANGE_CMD = 1;
-const QINGMEI_ACTIVITY_ID = 2026080100;
-const QINGMEI_SEED_CLAIM_ACTIVITY_ID = 2026080101;
-const QINGMEI_WINE_ACTIVITY_ID = 2026080102;
+const QINGMEI_ACTIVITY_ID = 2026081200;
+const QINGMEI_SEED_CLAIM_ACTIVITY_ID = 2026081201;
+const QINGMEI_WINE_ACTIVITY_ID = 2026081202;
 const QINGMEI_SEED_CLAIM_CMD = 4;
 const QINGMEI_WINE_PREVIEW_CMD = 14;
 const QINGMEI_WINE_BREW_CMD = 15;
@@ -88,6 +183,16 @@ const QINGMEI_SEED_ITEM_ID = 21221;
 const QINGMEI_FRUIT_ITEM_ID = 41221;
 const QINGMEI_SEED_REWARD_COUNT = 24;
 const QINGMEI_FINE_BREW_STEPS = 3;
+// 新协议常量（与 master 对齐）
+const QINGMEI_DAILY_GRANT_ID = 3;
+const QUERY_QINGMEI_OPERATE_TYPE = 7;
+const CLAIM_QINGMEI_SEED_OPERATE_TYPE = 4;
+const START_QINGMEI_BREW_OPERATE_TYPE = 14;
+const CONTINUE_QINGMEI_BREW_OPERATE_TYPE = 15;
+const SELL_QINGMEI_BREW_OPERATE_TYPE = 16;
+const QINGMEI_SHARE_SOURCE = 11;
+const QINGMEI_SHARE_SCENE = 215;
+const QINGMEI_SHARED_SETTLEMENT_MODE = 2;
 const HELU_PASSPORT_UID = 'SAIJI_PASSPORT';
 const HELU_TITLE = '荷风十里蝉初鸣';
 const HELU_SUB_ACTIVITY_KEYS = {
@@ -288,6 +393,73 @@ function createQingmeiWineError(stage, message, cause) {
 function isNoOngoingQingmeiBrewError(err) {
   const message = String(err?.message || err || '');
   return message.includes('1034027') || message.includes('无进行中的酿造记录');
+}
+
+function extractErrorCode(err) {
+  const message = String(err?.message || err || '');
+  const match = message.match(/code=(\d+)/);
+  return match ? Number(match[1]) : 0;
+}
+
+function isQingmeiAlreadyClaimedError(err) {
+  return extractErrorCode(err) === QINGMEI_DAILY_ALREADY_CLAIMED_CODE
+    || isAlreadyClaimedError(err);
+}
+
+// ===== 青酿新协议操作（与服务端匹配）=====
+
+async function operateQingMeiNew(requestType, payload, expectedErrorCodes = []) {
+  const body = Buffer.from(requestType.encode(requestType.create(payload)).finish());
+  const options = expectedErrorCodes.length > 0 ? { expectedErrorCodes } : undefined;
+  try {
+    const { body: replyBody } = await sendMsgAsync(
+      'gamepb.activitypb.ActivityService',
+      'Operate',
+      body,
+      options,
+    );
+    return replyBody ? types.ActivityOperateReplyNew.decode(replyBody) : {};
+  } catch (err) {
+    // sendMsgAsync 已经处理了 expectedErrorCodes，这里处理 GatewayError fallback
+    if (expectedErrorCodes.length > 0 && err instanceof GatewayError) {
+      if (expectedErrorCodes.includes(Number(err.code))) {
+        return {};
+      }
+    }
+    throw err;
+  }
+}
+
+async function reportQingMeiActivityShare() {
+  const body = types.ReportShareRequest.encode(types.ReportShareRequest.create({
+    shared: true,
+    field_1: QINGMEI_SHARE_SOURCE,
+    field_4: QINGMEI_SHARE_SCENE,
+  })).finish();
+  await sendMsgAsync('gamepb.sharepb.ShareService', 'ReportShare', body).catch(() => {});
+}
+
+// 获取背包中青酿材料（带 uid，用于酿造）
+async function getQingMeiBrewIngredients() {
+  const bag = await getBag();
+  const items = getBagItems(bag) || [];
+  const result = [];
+  for (const item of items) {
+    const id = toNum(item?.id);
+    const uid = toNum(item?.uid);
+    const count = toNum(item?.count);
+    if (id === QINGMEI_FRUIT_ITEM_ID && uid > 0 && count > 0) {
+      result.push({
+        id,
+        uid,
+        count,
+        mutantType: Array.isArray(item?.mutant_types) && item.mutant_types.length
+          ? Math.min(...item.mutant_types.map(toNum).filter(v => v > 0))
+          : 0,
+      });
+    }
+  }
+  return result;
 }
 
 async function reportQingmeiShareForDouble() {
@@ -1090,11 +1262,67 @@ async function getQingmeiWineMaterialItems() {
     }));
 }
 
-function normalizeQingmeiActivity(reply) {
+let qingmeiActivityIdsCache = null;
+
+function collectQingmeiActivityNodes(nodes, result = []) {
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    if (node?.activity && /青梅|青酿/.test(String(node?.activity?.title || ''))) {
+      result.push(node);
+    }
+    if (Array.isArray(node?.children)) collectQingmeiActivityNodes(node.children, result);
+  }
+  return result;
+}
+
+async function resolveQingmeiActivityIds() {
+  if (qingmeiActivityIdsCache) return qingmeiActivityIdsCache;
+  const fallback = {
+    rootId: QINGMEI_ACTIVITY_ID,
+    claimId: QINGMEI_SEED_CLAIM_ACTIVITY_ID,
+    wineId: QINGMEI_WINE_ACTIVITY_ID,
+  };
+  try {
+    const listed = await listActivityGroups();
+    const nodes = collectQingmeiActivityNodes(listed?.groups);
+    if (nodes.length === 0) {
+      qingmeiActivityIdsCache = fallback;
+      return qingmeiActivityIdsCache;
+    }
+    nodes.sort((a, b) => toNum(a?.activity?.id) - toNum(b?.activity?.id));
+    const rootId = toNum(nodes[0]?.activity?.id) || fallback.rootId;
+    let claimId = fallback.claimId;
+    let wineId = fallback.wineId;
+    if (nodes.length >= 3) {
+      claimId = toNum(nodes[1]?.activity?.id) || fallback.claimId;
+      wineId = toNum(nodes[2]?.activity?.id) || fallback.wineId;
+    } else if (nodes.length === 2) {
+      wineId = toNum(nodes[1]?.activity?.id) || fallback.wineId;
+    }
+    const rootNode = nodes.find(n => Array.isArray(n?.children) && n.children.length > 0);
+    if (rootNode) {
+      const childNodes = collectQingmeiActivityNodes(rootNode.children);
+      if (childNodes.length >= 2) {
+        childNodes.sort((a, b) => toNum(a?.activity?.id) - toNum(b?.activity?.id));
+        claimId = toNum(childNodes[0]?.activity?.id) || claimId;
+        wineId = toNum(childNodes[childNodes.length - 1]?.activity?.id) || wineId;
+      }
+    }
+    qingmeiActivityIdsCache = { rootId, claimId, wineId };
+    return qingmeiActivityIdsCache;
+  } catch {
+    qingmeiActivityIdsCache = fallback;
+    return qingmeiActivityIdsCache;
+  }
+}
+
+function normalizeQingmeiActivity(reply, ids = null) {
+  const rootId = ids?.rootId || QINGMEI_ACTIVITY_ID;
+  const claimId = ids?.claimId || QINGMEI_SEED_CLAIM_ACTIVITY_ID;
+  const wineId = ids?.wineId || QINGMEI_WINE_ACTIVITY_ID;
   const activities = flattenActivityChildren(reply);
-  const root = reply?.group?.activity || activities.find(item => toNum(item?.id) === QINGMEI_ACTIVITY_ID) || {};
-  const claim = activities.find(item => toNum(item?.id) === QINGMEI_SEED_CLAIM_ACTIVITY_ID) || {};
-  const wine = activities.find(item => toNum(item?.id) === QINGMEI_WINE_ACTIVITY_ID) || {};
+  const root = reply?.group?.activity || activities.find(item => toNum(item?.id) === rootId) || {};
+  const claim = activities.find(item => toNum(item?.id) === claimId) || {};
+  const wine = activities.find(item => toNum(item?.id) === wineId) || {};
   const status = toNum(claim?.status);
   const claimedToday = isQingmeiClaimedToday();
   const materialInfo = getItemById(QINGMEI_FRUIT_ITEM_ID);
@@ -1102,10 +1330,10 @@ function normalizeQingmeiActivity(reply) {
   return {
     uid: reply?.__activityUid || QINGMEI_ACTIVITY_UID,
     title: '青梅酿万金',
-    activityId: toNum(root?.id) || QINGMEI_ACTIVITY_ID,
-    claimActivityId: toNum(claim?.id) || QINGMEI_SEED_CLAIM_ACTIVITY_ID,
+    activityId: toNum(root?.id) || rootId,
+    claimActivityId: toNum(claim?.id) || claimId,
     claimCommand: QINGMEI_SEED_CLAIM_CMD,
-    wineActivityId: toNum(wine?.id) || QINGMEI_WINE_ACTIVITY_ID,
+    wineActivityId: toNum(wine?.id) || wineId,
     wineTitle: wine?.title || '青酿换万金',
     winePreviewCommand: QINGMEI_WINE_PREVIEW_CMD,
     wineBrewCommand: QINGMEI_WINE_BREW_CMD,
@@ -1131,189 +1359,243 @@ function normalizeQingmeiActivity(reply) {
   };
 }
 
-async function getQingmeiActivity() {
+const QINGMEI_RULES = {
+  title: '活动说明',
+  paragraphs: [
+    '1. 活动期间，每日可在「青梅」页面领取 24 颗青梅种子（领取后需种植并收获才能参与酿造）。',
+    '2. 酿造流程：选择青梅投入（默认 1 颗，可调整数量）→ 开始酿造 → 逐轮查看报价（点击继续酿造） → 合适时机点击「分享出售」结算（分享后享受约 1.5 倍价格）。',
+    '3. 保底价格：酿造未报价前显示保底单价，若报价未达预期可等待后续轮次；报价可能随轮次上涨或下跌。',
+    '4. 同一时间仅可进行一笔酿造，建议在高报价轮次及时出售锁定收益。',
+  ],
+};
+
+async function queryQingMeiBrewState(ids) {
   try {
-    const reply = await getActivityGroupWithUidFallback(QINGMEI_ACTIVITY_ID, [QINGMEI_ACTIVITY_UID, '']);
-    const activity = normalizeQingmeiActivity(reply);
-    activity.material.itemCount = await getBagItemCount(QINGMEI_FRUIT_ITEM_ID);
-    return activity;
-  } catch (err) {
-    const materialInfo = getItemById(QINGMEI_FRUIT_ITEM_ID);
-    return {
-      uid: QINGMEI_ACTIVITY_UID,
-      title: '青梅酿万金',
-      activityId: QINGMEI_ACTIVITY_ID,
-      claimActivityId: QINGMEI_SEED_CLAIM_ACTIVITY_ID,
-      claimCommand: QINGMEI_SEED_CLAIM_CMD,
-      wineActivityId: QINGMEI_WINE_ACTIVITY_ID,
-      wineTitle: '青酿换万金',
-      winePreviewCommand: QINGMEI_WINE_PREVIEW_CMD,
-      wineBrewCommand: QINGMEI_WINE_BREW_CMD,
-      wineSellCommand: QINGMEI_WINE_SELL_CMD,
-      claimed: false,
-      claimable: false,
-      reward: {
-        itemId: QINGMEI_SEED_ITEM_ID,
-        itemCount: QINGMEI_SEED_REWARD_COUNT,
-        itemName: getItemById(QINGMEI_SEED_ITEM_ID)?.name || '青梅种子',
-        image: getItemImageById(QINGMEI_SEED_ITEM_ID) || '',
-      },
-      material: {
-        itemId: QINGMEI_FRUIT_ITEM_ID,
-        itemCount: await getBagItemCount(QINGMEI_FRUIT_ITEM_ID),
-        itemName: materialInfo?.name || '青梅',
-        image: getItemImageById(QINGMEI_FRUIT_ITEM_ID) || '',
-      },
-      warning: err?.message || String(err),
-    };
+    const reply = await operateQingMeiNew(types.QueryActivityRequest, {
+      activity_id: String(ids.wineId),
+      operate_type: QUERY_QINGMEI_OPERATE_TYPE,
+    });
+    return reply?.data?.qingmei_brew || null;
+  } catch {
+    return null;
   }
+}
+
+async function getQingmeiActivity() {
+  const ids = await resolveQingmeiActivityIds();
+  const balance = await getBagItemCount(QINGMEI_FRUIT_ITEM_ID).catch(() => null);
+  // 用新协议 query 获取完整状态（对齐 master 的 queryQingMeiReply）
+  try {
+    const reply = await queryQingMeiBrewStateInternal(ids);
+    if (reply && reply.data) {
+      return qingmeiDtoFromReply({ data: reply }, ids, balance);
+    }
+  } catch (_) { /* ignore */ }
+  // fallback：兜底返回 DTO（空状态 + 已知余额）
+  const fallback = qingmeiDtoFromReply({}, ids, balance);
+  try {
+    const [groupReply, brewState] = await Promise.all([
+      getActivityGroupWithUidFallback(ids.rootId, [QINGMEI_ACTIVITY_UID, '']).catch(() => null),
+      queryQingMeiBrewState(ids).catch(() => null),
+    ]);
+    if (groupReply) {
+      const normalized = normalizeQingmeiActivity(groupReply, ids);
+      fallback.claimed = !!normalized.claimed || fallback.claimed;
+      fallback.claimable = !!normalized.claimable || fallback.claimable;
+      fallback.startTime = normalized.startTime || fallback.startTime;
+      fallback.endTime = normalized.endTime || fallback.endTime;
+    }
+    if (brewState) {
+      fallback.currentRound = toNum(brewState.current_round);
+      fallback.maxRounds = toNum(brewState.max_rounds) || QINGMEI_FINE_BREW_STEPS;
+      fallback.started = toNum(brewState.base_gold) > 0 || (Array.isArray(brewState.quote_prices) && brewState.quote_prices.length > 0) || !!brewState.finished;
+      fallback.baseGold = String(toNum(brewState.base_gold));
+      fallback.basePrice = String(toNum(brewState.base_price));
+      fallback.guaranteedPrice = String(toNum(brewState.guaranteed_price));
+      fallback.quotePrices = (Array.isArray(brewState.quote_prices) ? brewState.quote_prices : []).map(v => String(toNum(v)));
+      fallback.quoteTotals = (Array.isArray(brewState.quote_totals) ? brewState.quote_totals : []).map(v => String(toNum(v)));
+      fallback.finished = !!brewState.finished;
+      if (fallback.actions) {
+        fallback.actions.continue.enabled = fallback.currentRound < fallback.maxRounds && !fallback.finished && toNum(brewState.base_gold) > 0;
+        fallback.actions.continue.available = fallback.actions.continue.enabled;
+        fallback.actions.settle.enabled = fallback.currentRound >= fallback.maxRounds && toNum(brewState.base_gold) > 0;
+        fallback.actions.settle.available = fallback.actions.settle.enabled;
+      }
+    }
+    return fallback;
+  } catch (err) {
+    fallback.warning = err?.message || String(err);
+    return fallback;
+  }
+}
+
+// 对齐 master 的 queryQingMeiReply：用 QueryActivityRequest 查询酿造活动完整 data（activity + qingmei_brew + qingmei_daily_seed）
+async function queryQingMeiBrewStateInternal(ids) {
+  const reply = await operateQingMeiNew(types.QueryActivityRequest, {
+    activity_id: String(ids.wineId),
+    operate_type: QUERY_QINGMEI_OPERATE_TYPE,
+  });
+  return reply?.data || null;
 }
 
 async function claimQingmeiSeeds() {
-  const beforeCount = await getBagItemCount(QINGMEI_SEED_ITEM_ID);
-  let reply = null;
-  try {
-    reply = await operateActivityReply(QINGMEI_SEED_CLAIM_ACTIVITY_ID, QINGMEI_SEED_CLAIM_CMD, {
-      qingmeiClaim: { type: 2 },
-    });
-  } catch (err) {
-    if (isAlreadyClaimedError(err)) {
-      markQingmeiClaimedToday();
-      return {
-        ok: true,
-        alreadyClaimed: true,
-        claimedCount: 0,
-        beforeCount,
-        afterCount: beforeCount,
-        qingmei: await getQingmeiActivity(),
-      };
+  return serializeMutation(async () => {
+    const ids = await resolveQingmeiActivityIds();
+    let reply = null;
+    let alreadyClaimed = false;
+    try {
+      reply = await operateQingMeiNew(
+        types.ClaimQingMeiDailySeedRequest,
+        {
+          activity_id: String(ids.claimId),
+          operate_type: CLAIM_QINGMEI_SEED_OPERATE_TYPE,
+          params: { grant_id: String(QINGMEI_DAILY_GRANT_ID) },
+        },
+        [QINGMEI_DAILY_ALREADY_CLAIMED_CODE],
+      );
+    } catch (err) {
+      if (!(err instanceof GatewayError) || Number(err.code) !== QINGMEI_DAILY_ALREADY_CLAIMED_CODE) {
+        throw err;
+      }
+      alreadyClaimed = true;
     }
-    throw err;
-  }
-
-  const claimResult = normalizeQingmeiClaimResult(reply?.qingmei_claim);
-  await delay(HELU_DRAW_REFRESH_DELAY_MS);
-  const afterCount = await getBagItemCount(QINGMEI_SEED_ITEM_ID);
-  const claimedCount = claimResult.claimedCount || Math.max(0, afterCount - beforeCount);
-  if (claimedCount <= 0) {
-    throw new Error('领取青梅种子失败: 服务端未返回奖励，背包数量也未增加');
-  }
-  if (claimedCount > 0) markQingmeiClaimedToday();
-
-  activityLogger.info('领取青梅种子完成', {
-    event: 'qingmei_seed_claim',
-    itemId: QINGMEI_SEED_ITEM_ID,
-    beforeCount,
-    afterCount,
-    claimedCount,
-    rewardItems: claimResult.items,
+    qingMeiSeedClaimedDateKey = beijingDateKey();
+    const rewards = (Array.isArray(reply?.rewards) ? reply.rewards : []).map(normalizeCoreItem).filter(i => i.itemId > 0);
+    // 对齐 master：不二次查询背包比较，直接从响应获取状态
+    const balance = await getBagItemCount(QINGMEI_FRUIT_ITEM_ID).catch(() => 0);
+    const after = reply && Object.keys(reply).length > 0 ? reply : null;
+    const qingmei = after ? qingmeiDtoFromReply(after, ids, balance) : await getQingmeiActivity().catch(() => null);
+    activityLogger.info('领取青梅种子完成（新协议）', {
+      event: 'qingmei_seed_claim',
+      alreadyClaimed,
+      rewardCount: rewards.length,
+    });
+    return {
+      ok: true,
+      alreadyClaimed,
+      message: alreadyClaimed ? '今日青梅种子已经领取，无需重复领取' : '青梅种子领取成功',
+      claimedCount: rewards.filter(r => r.itemId === QINGMEI_SEED_ITEM_ID).reduce((s, r) => s + (r.itemCount || r.count || 0), 0) || (alreadyClaimed ? 0 : QINGMEI_SEED_REWARD_COUNT),
+      rewards,
+      qingmei,
+    };
   });
-
-  return {
-    ok: true,
-    claimedCount,
-    beforeCount,
-    afterCount,
-    rewards: claimResult.items,
-    qingmei: await getQingmeiActivity(),
-  };
 }
 
 async function brewAndSellQingmeiWine(options = {}) {
+  const ids = await resolveQingmeiActivityIds();
+  const wineActivityId = String(ids.wineId);
   const share = options?.share !== false;
   const brewSteps = Math.max(1, Number(options?.brewSteps) || QINGMEI_FINE_BREW_STEPS);
-  const materialItems = await getQingmeiWineMaterialItems();
-  const beforeMaterialCount = materialItems.reduce((sum, item) => sum + Math.max(0, toNum(item?.count)), 0);
+  const brewIngredients = await getQingMeiBrewIngredients();
+  const beforeMaterialCount = brewIngredients.reduce((sum, item) => sum + Math.max(0, toNum(item?.count)), 0);
   if (beforeMaterialCount <= 0) {
     throw createQingmeiWineError('material', '青梅不足，无法精酿');
   }
 
-  let previewReply = null;
-  let previewWarning = '';
+  let startWarning = '';
+  // 步骤 1：StartQingMeiBrew（投入青梅，必须带 uid）
+  const firstIngredient = brewIngredients[0];
+  const requestedCount = Math.max(1, Math.min(
+    Math.floor(Number(options?.count) || 0),
+    beforeMaterialCount,
+  )) || Math.max(1, Math.min(toNum(firstIngredient?.count), beforeMaterialCount));
+  const useCount = Math.max(1, Math.min(requestedCount, toNum(firstIngredient?.count) || beforeMaterialCount));
+  let startReply = null;
   try {
-    previewReply = await operateActivityReply(QINGMEI_WINE_ACTIVITY_ID, QINGMEI_WINE_PREVIEW_CMD, {
-      qingmeiWineStart: { items: materialItems },
+    startReply = await operateQingMeiNew(types.StartQingMeiBrewRequest, {
+      activity_id: wineActivityId,
+      operate_type: START_QINGMEI_BREW_OPERATE_TYPE,
+      params: {
+        ingredient: {
+          uid: String(firstIngredient.uid),
+          count: String(useCount),
+        },
+      },
     });
   } catch (err) {
-    previewWarning = `打开青梅酿售卖失败，已尝试直接精酿: ${err.message}`;
+    if (isNoOngoingQingmeiBrewError(err) || err?.message?.includes('进行中') || extractErrorCode(err) === 0) {
+      startWarning = `投入青梅: ${err?.message || String(err)}（继续已有酿造）`;
+    } else {
+      throw createQingmeiWineError('start', `青梅酿投入失败: ${err.message}`, err);
+    }
   }
-  const preview = normalizeQingmeiPreviewResult(previewReply?.qingmei_preview);
   await delay(QINGMEI_WINE_STEP_DELAY_MS);
 
-  const brews = [];
+  // 步骤 2：Continue（多轮报价）
+  const quotes = [];
+  let currentQuote = null;
   for (let index = 0; index < brewSteps; index += 1) {
-    let brewReply = null;
+    let contReply = null;
     try {
-      brewReply = await operateActivityReply(QINGMEI_WINE_ACTIVITY_ID, QINGMEI_WINE_BREW_CMD, {
-        qingmeiWineBrew: true,
+      contReply = await operateQingMeiNew(types.ContinueQingMeiBrewRequest, {
+        activity_id: wineActivityId,
+        operate_type: CONTINUE_QINGMEI_BREW_OPERATE_TYPE,
+        params: {},
       });
     } catch (err) {
-      if (index === 0 && isNoOngoingQingmeiBrewError(err)) {
-        try {
-          const retryMaterialItems = await getQingmeiWineMaterialItems();
-          previewReply = await operateActivityReply(QINGMEI_WINE_ACTIVITY_ID, QINGMEI_WINE_PREVIEW_CMD, {
-            qingmeiWineStart: { items: retryMaterialItems },
-          });
-          await delay(QINGMEI_WINE_STEP_DELAY_MS);
-          brewReply = await operateActivityReply(QINGMEI_WINE_ACTIVITY_ID, QINGMEI_WINE_BREW_CMD, {
-            qingmeiWineBrew: true,
-          });
-        } catch (retryErr) {
-          throw createQingmeiWineError('brew', `青梅酿精酿失败: ${retryErr.message}`, retryErr);
-        }
-      } else {
-        throw createQingmeiWineError('brew', `青梅酿精酿失败: ${err.message}`, err);
-      }
+      if (index > 0) break;
+      throw createQingmeiWineError('brew', `青梅酿第${index + 1}轮报价失败: ${err.message}`, err);
     }
-    const brew = normalizeQingmeiBrewResult(brewReply?.qingmei_brew);
-    if (brew) brews.push(brew);
+    const q = contReply?.qingmei_quote || null;
+    if (q) {
+      currentQuote = {
+        round: toNum(q.round),
+        unitPrice: toNum(q.unit_price),
+        totalGold: toNum(q.total_gold),
+        doubled: !!q.doubled,
+      };
+      quotes.push(currentQuote);
+    }
     await delay(QINGMEI_WINE_STEP_DELAY_MS);
   }
 
-  const finalBrew = brews[brews.length - 1] || null;
-  if (!finalBrew) {
-    throw createQingmeiWineError('brew', beforeMaterialCount <= 0
-      ? '青梅不足，无法精酿'
-      : '精酿未返回有效结果，请稍后重试');
+  const lastQuote = quotes[quotes.length - 1] || null;
+  const brewStarted = !!(startReply?.qingmei_brew_started || lastQuote);
+  if (!brewStarted) {
+    throw createQingmeiWineError('brew', `精酿未返回有效结果，请稍后刷新重试`);
   }
 
-  let shareResult = { canShare: false, shared: false, success: false };
-  if (share && finalBrew?.canDouble) {
+  // 步骤 3：分享（可选）
+  let shared = false;
+  if (share) {
     try {
-      shareResult = await reportQingmeiShareForDouble();
+      await reportQingMeiActivityShare();
+      shared = true;
     } catch (err) {
-      throw createQingmeiWineError('share', `青梅酿分享翻倍失败: ${err.message}`, err);
+      // 分享上报非关键，失败不阻塞
     }
     await delay(HELU_DRAW_REFRESH_DELAY_MS);
   }
 
-  let sellReply = null;
-  const sellMultiple = shareResult.shared ? 2 : 1;
+  // 步骤 4：Settle（结算售卖）
+  let settleReply = null;
   try {
-    sellReply = await operateActivityReply(QINGMEI_WINE_ACTIVITY_ID, QINGMEI_WINE_SELL_CMD, {
-      qingmeiWineSell: { multiple: sellMultiple },
+    settleReply = await operateQingMeiNew(types.SettleQingMeiBrewRequest, {
+      activity_id: wineActivityId,
+      operate_type: SELL_QINGMEI_BREW_OPERATE_TYPE,
+      params: { settlement_mode: shared ? QINGMEI_SHARED_SETTLEMENT_MODE : 1 },
     });
   } catch (err) {
-    throw createQingmeiWineError('sell', `青梅酿售卖失败: ${err.message}`, err);
+    throw createQingmeiWineError('sell', `青梅酿售卖结算失败: ${err.message}`, err);
   }
-  const sell = normalizeQingmeiSellResult(sellReply?.qingmei_sell);
-  if (!sell || sell.gold <= 0) {
+  const settlement = settleReply?.qingmei_settlement || null;
+  const settleRewards = (Array.isArray(settleReply?.rewards) ? settleReply.rewards : []).map(normalizeCoreItem).filter(i => i.itemId > 0);
+  const totalGold = toNum(settlement?.total_gold) || 0;
+  if (totalGold <= 0 && settleRewards.length === 0) {
     throw createQingmeiWineError('sell', '售卖未返回金币收益，请稍后刷新活动状态');
   }
   await delay(HELU_DRAW_REFRESH_DELAY_MS);
   const afterMaterialCount = await getBagItemCount(QINGMEI_FRUIT_ITEM_ID);
 
-  activityLogger.info('青梅酿售卖完成', {
+  activityLogger.info('青梅酿售卖完成（新协议）', {
     event: 'qingmei_wine_sell',
     beforeMaterialCount,
     afterMaterialCount,
-    materialBatchCount: materialItems.length,
-    brewSteps: brews.length,
-    wineType: finalBrew?.wineType,
-    price: finalBrew?.price,
-    shared: shareResult.shared,
-    sellMultiple,
-    gold: sell?.gold,
+    ingredientBatches: brewIngredients.length,
+    quoteCount: quotes.length,
+    shared,
+    totalGold,
+    settleRewardCount: settleRewards.length,
   });
 
   return {
@@ -1321,15 +1603,481 @@ async function brewAndSellQingmeiWine(options = {}) {
     beforeMaterialCount,
     afterMaterialCount,
     consumedCount: Math.max(0, beforeMaterialCount - afterMaterialCount),
-    materialBatchCount: materialItems.length,
-    preview,
-    previewWarning,
-    brews,
-    brew: finalBrew,
-    share: shareResult,
-    sell,
+    materialBatchCount: brewIngredients.length,
+    preview: { price: toNum(startReply?.qingmei_brew_started?.base_gold) || 0 },
+    previewWarning: startWarning,
+    brews: quotes,
+    brew: lastQuote || {
+      wineType: 0,
+      price: toNum(startReply?.qingmei_brew_started?.base_price) || 0,
+      cost: 0,
+      canDouble: false,
+    },
+    share: {
+      canShare: true,
+      shared,
+      success: true,
+    },
+    sell: {
+      multiple: shared ? 2 : 1,
+      gold: totalGold,
+      item: settleRewards[0] || null,
+    },
     activity: await getHeluActivity().catch(() => null),
   };
+}
+
+// ===== 青酿分步操作 =====
+
+// 从 operate 响应中直接提取青酿状态（对齐 master 的 qingMeiDto）
+function qingmeiDtoFromReply(reply, ids, balance = null) {
+  const activity = reply?.data?.activity;
+  const brew = reply?.data?.qingmei_brew || {};
+  const quote = reply?.qingmei_quote || reply?.data?.qingmei_quote || null;
+  const dailySeed = reply?.data?.qingmei_daily_seed || null;
+  const currentRound = toNum(brew.current_round);
+  const started = toNum(brew.base_gold) > 0;
+  const maxRounds = Math.max(1, toNum(brew.max_rounds) || QINGMEI_FINE_BREW_STEPS);
+  const quotePrices = (Array.isArray(brew.quote_prices) ? brew.quote_prices : []).map(v => String(toNum(v)));
+  const quoteTotals = (Array.isArray(brew.quote_totals) ? brew.quote_totals : []).map(v => String(toNum(v)));
+  const materialInfo = getItemById(QINGMEI_FRUIT_ITEM_ID);
+  const balStr = balance !== null ? String(balance) : null;
+  const balNum = balance !== null ? Number(balance) || 0 : 0;
+  // 优先使用内存缓存判断领取状态（beijing 日期），避免 query 状态延迟误显示
+  const dailySeedClaimed = qingMeiSeedClaimedDateKey === beijingDateKey() || !!dailySeed?.claimed;
+  // 动态解析活动说明（对齐 master 的 textContent），兜底硬编码规则
+  const rulesFromExtra = parseActivityRules(activity?.extra);
+  const rules = rulesFromExtra?.paragraphs?.length ? rulesFromExtra : QINGMEI_RULES;
+  // grant 的奖励物品从 dailySeed.grant.item 取（对齐 master）
+  let grantReward = null;
+  if (dailySeed?.grant?.item) {
+    const gItem = dailySeed.grant.item;
+    const gId = toNum(gItem.item_id || gItem.itemId || gItem.id);
+    const meta = gId > 0 ? getItemById(gId) : null;
+    grantReward = {
+      itemId: gId,
+      itemCount: toNum(gItem.count),
+      itemName: meta?.name || bytesToText(gItem.name) || '青梅种子',
+      image: gId > 0 ? getItemImageById(gId) : '',
+    };
+  }
+  if (!grantReward) {
+    grantReward = {
+      itemId: QINGMEI_SEED_ITEM_ID,
+      itemCount: QINGMEI_SEED_REWARD_COUNT,
+      itemName: getItemById(QINGMEI_SEED_ITEM_ID)?.name || '青梅种子',
+      image: getItemImageById(QINGMEI_SEED_ITEM_ID) || '',
+    };
+  }
+  const ingredientMeta = materialInfo || {};
+  return {
+    uid: QINGMEI_ACTIVITY_UID,
+    title: '青梅酿万金',
+    name: bytesToText(activity?.name) || '青酿换万金',
+    activityId: String(toNum(activity?.activity_id) || String(ids.wineId)),
+    dailyActivityId: String(ids.claimId),
+    claimActivityId: ids.claimId,
+    claimCommand: QINGMEI_SEED_CLAIM_CMD,
+    wineActivityId: ids.wineId,
+    wineTitle: '青酿换万金',
+    startTime: toNum(activity?.begin_time) || undefined,
+    endTime: toNum(activity?.end_time) || undefined,
+    claimed: dailySeedClaimed,
+    claimable: !dailySeedClaimed,
+    reward: grantReward,
+    material: {
+      itemId: QINGMEI_FRUIT_ITEM_ID,
+      itemCount: balNum,
+      itemName: ingredientMeta.name || '青梅',
+      image: getItemImageById(QINGMEI_FRUIT_ITEM_ID) || '',
+    },
+    ingredient: {
+      id: String(QINGMEI_FRUIT_ITEM_ID),
+      count: balStr || '0',
+      name: ingredientMeta.name || '青梅',
+      image: getItemImageById(QINGMEI_FRUIT_ITEM_ID) || '',
+      rarity: Number(ingredientMeta.rarity) || 0,
+      itemId: QINGMEI_FRUIT_ITEM_ID,
+      itemCount: balNum,
+      itemName: ingredientMeta.name || '青梅',
+    },
+    balance: balStr,
+    balanceKnown: balance !== null,
+    baseGold: String(toNum(brew.base_gold)),
+    basePrice: String(toNum(brew.base_price)),
+    guaranteedPrice: String(toNum(brew.guaranteed_price)),
+    currentRound,
+    started,
+    maxRounds,
+    finished: !!brew.finished,
+    quotePrices,
+    quoteTotals,
+    quote: quote ? {
+      round: toNum(quote.round),
+      unitPrice: String(toNum(quote.unit_price)),
+      totalGold: String(toNum(quote.total_gold)),
+      doubled: !!quote.doubled,
+    } : null,
+    dailySeed: {
+      claimed: dailySeedClaimed,
+      grantId: dailySeed ? String(toNum(dailySeed?.grant?.grant_id) || QINGMEI_DAILY_GRANT_ID) : String(QINGMEI_DAILY_GRANT_ID),
+      reward: grantReward,
+      grant: { grantId: toNum(dailySeed?.grant?.grant_id) || QINGMEI_DAILY_GRANT_ID },
+    },
+    actions: {
+      claimSeed: { enabled: !dailySeedClaimed, available: !dailySeedClaimed },
+      start: {
+        enabled: balance === null || balNum > 0,
+        available: balance === null || balNum > 0,
+      },
+      continue: {
+        enabled: currentRound < maxRounds && !brew.finished && toNum(brew.base_gold) > 0,
+        available: currentRound < maxRounds && !brew.finished && toNum(brew.base_gold) > 0,
+      },
+      settle: {
+        enabled: currentRound >= maxRounds && toNum(brew.base_gold) > 0,
+        available: currentRound >= maxRounds && toNum(brew.base_gold) > 0,
+      },
+    },
+    rules,
+  };
+}
+
+async function startQingmeiBrew(options = {}) {
+  return serializeMutation(async () => {
+    const ids = await resolveQingmeiActivityIds();
+    const wineActivityId = String(ids.wineId);
+    const countText = String(Math.floor(Number(options?.count) || 0));
+    if (!/^[1-9]\d*$/.test(countText)) {
+      throw createQingmeiWineError('invalid_count', '投入数量必须是正整数');
+    }
+    const count = BigInt(countText);
+    // 对齐 master：必须找到单个背包条目，该条目的 count >= inputCount
+    const bagReply = await getBag();
+    const candidates = getBagItems(bagReply).filter(item => toNum(item?.id) === QINGMEI_FRUIT_ITEM_ID);
+    const item = candidates.find(entry => {
+      const entryCount = BigInt(String(toNum(entry?.count) || '0'));
+      return entryCount >= count;
+    });
+    if (!item) {
+      throw createQingmeiWineError('material', '青梅数量不足，或数量分散在多个背包条目中');
+    }
+    let startReply = null;
+    try {
+      startReply = await operateQingMeiNew(types.StartQingMeiBrewRequest, {
+        activity_id: wineActivityId,
+        operate_type: START_QINGMEI_BREW_OPERATE_TYPE,
+        params: {
+          ingredient: { uid: String(item.uid), count: countText },
+        },
+      });
+    } catch (err) {
+      const msg = String(err?.message || err || '');
+      if (msg.includes('进行中') || msg.includes('已投入') || extractErrorCode(err) === 1034026) {
+        startReply = startReply || {};
+      } else {
+        throw createQingmeiWineError('start', `青梅酿启动失败: ${err.message}`, err);
+      }
+    }
+    const newBalance = await getBagItemCount(QINGMEI_FRUIT_ITEM_ID).catch(() => 0);
+    const qingmei = qingmeiDtoFromReply(startReply, ids, newBalance);
+    activityLogger.info('青梅酿启动成功（新协议）', {
+      event: 'qingmei_brew_start',
+      count: countText,
+    });
+    return {
+      ok: true,
+      activity: qingmei,
+      qingmei,
+      count: countText,
+      message: `已投入 ${countText} 个青梅开始酿造`,
+    };
+  });
+}
+
+async function continueQingmeiBrew(options = {}) {
+  return serializeMutation(async () => {
+    const ids = await resolveQingmeiActivityIds();
+    const wineActivityId = String(ids.wineId);
+    let contReply = null;
+    try {
+      contReply = await operateQingMeiNew(types.ContinueQingMeiBrewRequest, {
+        activity_id: wineActivityId,
+        operate_type: CONTINUE_QINGMEI_BREW_OPERATE_TYPE,
+        params: {},
+      });
+    } catch (err) {
+      throw createQingmeiWineError('continue', `青梅酿报价失败: ${err.message}`, err);
+    }
+    const q = contReply?.qingmei_quote || contReply?.data?.qingmei_quote || null;
+    const quote = q ? {
+      round: toNum(q.round),
+      unitPrice: String(toNum(q.unit_price)),
+      totalGold: String(toNum(q.total_gold)),
+      doubled: !!q.doubled,
+    } : null;
+    const balance = await getBagItemCount(QINGMEI_FRUIT_ITEM_ID).catch(() => 0);
+    const qingmei = qingmeiDtoFromReply(contReply, ids, balance);
+    return {
+      ok: true,
+      quote,
+      snapshot: { qingMei: qingmei },
+      qingmei,
+      message: quote ? `第 ${quote.round} 轮报价：倍率 ${formatMultiplier(quote.unitPrice)}，共 ${formatGold(quote.totalGold)} 金币` : '酿造进度已更新',
+    };
+  });
+}
+
+/**
+ * 一键酿造：自动循环 continue 直到完成全部轮次（默认3轮）
+ * 适用于已启动酿造后，一次性跑完所有报价轮次
+ */
+async function autoBrewQingmei(options = {}) {
+  return serializeMutation(async () => {
+    const ids = await resolveQingmeiActivityIds();
+    const wineActivityId = String(ids.wineId);
+
+    activityLogger.info('一键酿造开始', {
+      event: 'qingmei_auto_brew_start',
+      wineActivityId,
+    });
+
+    // 先查询当前状态，确认已启动且未完成
+    let stateReply = null;
+    try {
+      stateReply = await queryQingMeiBrewStateInternal(ids);
+    } catch (err) {
+      activityLogger.warn('一键酿造：查询初始状态失败', {
+        event: 'qingmei_auto_brew_state_query_failed',
+        error: err?.message || String(err),
+      });
+    }
+    const initialBrew = stateReply?.data?.qingmei_brew || stateReply?.qingmei_brew || {};
+    const maxRounds = Math.max(1, toNum(initialBrew.max_rounds) || QINGMEI_FINE_BREW_STEPS);
+    const baseGold = toNum(initialBrew.base_gold);
+    let currentRound = toNum(initialBrew.current_round);
+
+    activityLogger.info('一键酿造：初始状态', {
+      event: 'qingmei_auto_brew_initial',
+      maxRounds,
+      currentRound,
+      baseGold,
+      finished: !!initialBrew.finished,
+    });
+
+    if (baseGold <= 0) {
+      activityLogger.warn('一键酿造中止：尚未启动酿造', {
+        event: 'qingmei_auto_brew_not_started',
+      });
+      throw createQingmeiWineError('auto', '尚未启动青梅酿造，请先投入青梅');
+    }
+    if (currentRound >= maxRounds || initialBrew.finished) {
+      // 已完成所有轮次，直接返回当前状态
+      const balance = await getBagItemCount(QINGMEI_FRUIT_ITEM_ID).catch(() => 0);
+      const qingmei = qingmeiDtoFromReply(stateReply?.data ? { data: stateReply.data } : stateReply || {}, ids, balance);
+      activityLogger.info('一键酿造：已完成全部轮次，无需继续', {
+        event: 'qingmei_auto_brew_already_done',
+        maxRounds,
+        currentRound,
+      });
+      return {
+        ok: true,
+        quotes: [],
+        completedRounds: 0,
+        qingmei,
+        snapshot: { qingMei: qingmei },
+        message: `已完成全部 ${maxRounds} 轮酿造，可直接结算出售`,
+      };
+    }
+
+    const remainRounds = Math.max(0, maxRounds - currentRound);
+    const quotes = [];
+    let lastReply = null;
+    activityLogger.info('一键酿造：开始循环报价', {
+      event: 'qingmei_auto_brew_loop_start',
+      remainRounds,
+      fromRound: currentRound + 1,
+      toRound: maxRounds,
+    });
+    for (let i = 0; i < remainRounds; i += 1) {
+      const roundIndex = i + 1;
+      const expectedRound = currentRound + 1;
+      activityLogger.info(`一键酿造：开始第 ${roundIndex}/${remainRounds} 次 continue（期望得到第 ${expectedRound} 轮报价）`, {
+        event: 'qingmei_auto_brew_round_start',
+        loopIndex: i,
+        roundIndex,
+        remainRounds,
+        expectedRound,
+      });
+
+      let contReply = null;
+      const roundStartTime = Date.now();
+      try {
+        contReply = await operateQingMeiNew(types.ContinueQingMeiBrewRequest, {
+          activity_id: wineActivityId,
+          operate_type: CONTINUE_QINGMEI_BREW_OPERATE_TYPE,
+          params: {},
+        });
+      } catch (err) {
+        const elapsedMs = Date.now() - roundStartTime;
+        activityLogger.error(`一键酿造：第 ${roundIndex} 次 continue 失败`, {
+          event: 'qingmei_auto_brew_round_failed',
+          loopIndex: i,
+          roundIndex,
+          expectedRound,
+          elapsedMs,
+          error: err?.message || String(err),
+          completedQuotes: quotes.length,
+        });
+        // 如果非首轮失败，保留已完成轮次，返回中间状态
+        if (quotes.length > 0) break;
+        throw createQingmeiWineError('auto', `一键酿造第${roundIndex}轮报价失败: ${err.message}`, err);
+      }
+      lastReply = contReply;
+      const elapsedMs = Date.now() - roundStartTime;
+      const q = contReply?.qingmei_quote || contReply?.data?.qingmei_quote || null;
+      if (q) {
+        const quoteData = {
+          round: toNum(q.round),
+          unitPrice: String(toNum(q.unit_price)),
+          totalGold: String(toNum(q.total_gold)),
+          doubled: !!q.doubled,
+        };
+        quotes.push(quoteData);
+        currentRound = toNum(q.round);
+        activityLogger.info(`一键酿造：第 ${roundIndex}/${remainRounds} 次 continue 完成`, {
+          event: 'qingmei_auto_brew_round_done',
+          loopIndex: i,
+          roundIndex,
+          returnedRound: quoteData.round,
+          unitPrice: quoteData.unitPrice,
+          totalGold: quoteData.totalGold,
+          doubled: quoteData.doubled,
+          elapsedMs,
+          currentRound,
+          maxRounds,
+          progress: `${currentRound}/${maxRounds}`,
+        });
+      } else {
+        activityLogger.warn(`一键酿造：第 ${roundIndex}/${remainRounds} 次 continue 无报价数据`, {
+          event: 'qingmei_auto_brew_round_no_quote',
+          loopIndex: i,
+          roundIndex,
+          elapsedMs,
+          replyKeys: contReply ? Object.keys(contReply) : [],
+        });
+      }
+      // 最后一轮不需要再 delay
+      if (i < remainRounds - 1) {
+        await delay(QINGMEI_WINE_STEP_DELAY_MS);
+      }
+    }
+
+    const balance = await getBagItemCount(QINGMEI_FRUIT_ITEM_ID).catch(() => 0);
+    const qingmei = lastReply
+      ? qingmeiDtoFromReply(lastReply, ids, balance)
+      : stateReply?.data
+        ? qingmeiDtoFromReply({ data: stateReply.data }, ids, balance)
+        : qingmeiDtoFromReply({}, ids, balance);
+
+    const lastQ = quotes[quotes.length - 1];
+    activityLogger.info('一键酿造：全部完成', {
+      event: 'qingmei_auto_brew_complete',
+      totalRounds: maxRounds,
+      completedRounds: quotes.length,
+      finalRound: lastQ?.round || currentRound,
+      finalTotalGold: lastQ?.totalGold,
+      finalUnitPrice: lastQ?.unitPrice,
+      quotesSummary: quotes.map(q => ({ round: q.round, totalGold: q.totalGold, unitPrice: q.unitPrice, doubled: q.doubled })),
+      balance,
+    });
+
+    return {
+      ok: true,
+      quotes,
+      completedRounds: quotes.length,
+      totalRounds: maxRounds,
+      qingmei,
+      snapshot: { qingMei: qingmei },
+      message: lastQ
+        ? `一键酿造完成：共 ${quotes.length} 轮，最终报价 ${formatGold(lastQ.totalGold)} 金币（倍率 ${formatMultiplier(lastQ.unitPrice)}，第 ${lastQ.round}/${maxRounds} 轮）`
+        : `一键酿造完成，已完成 ${quotes.length} 轮报价`,
+    };
+  });
+}
+
+async function settleQingmeiBrew(options = {}) {
+  return serializeMutation(async () => {
+    const ids = await resolveQingmeiActivityIds();
+    const wineActivityId = String(ids.wineId);
+
+    // 先检查状态：必须完成 3 轮酿造才能结算
+    try {
+      const stateReply = await queryQingMeiBrewStateInternal(ids);
+      const brew = stateReply?.data?.qingmei_brew || stateReply?.qingmei_brew || {};
+      const currentRound = toNum(brew.current_round);
+      const maxRounds = Math.max(1, toNum(brew.max_rounds) || QINGMEI_FINE_BREW_STEPS);
+      const baseGold = toNum(brew.base_gold);
+      if (baseGold <= 0) {
+        throw new Error('尚未启动青梅酿造，无法结算');
+      }
+      if (currentRound < maxRounds && !brew.finished) {
+        throw new Error(`需要完成全部 ${maxRounds} 轮酿造后才能结算，当前第 ${currentRound}/${maxRounds} 轮`);
+      }
+    } catch (err) {
+      if (err?.message?.includes('需要完成') || err?.message?.includes('尚未启动')) {
+        throw err;
+      }
+      // 状态查询失败不阻断结算，继续尝试
+    }
+
+    // 对齐 master：先分享再结算，不 delay
+    try {
+      await reportQingMeiActivityShare();
+    } catch (_) { /* non-critical */ }
+
+    let settleReply = null;
+    try {
+      settleReply = await operateQingMeiNew(types.SettleQingMeiBrewRequest, {
+        activity_id: wineActivityId,
+        operate_type: SELL_QINGMEI_BREW_OPERATE_TYPE,
+        params: { settlement_mode: QINGMEI_SHARED_SETTLEMENT_MODE },
+      });
+    } catch (err) {
+      throw createQingmeiWineError('settle', `青梅酿结算失败: ${err.message}`, err);
+    }
+    const settlement = settleReply?.qingmei_settlement || null;
+    const settlementReward = settlement?.reward ? [normalizeCoreItem(settlement.reward)].filter(i => i.itemId > 0) : [];
+    const extraRewards = (Array.isArray(settleReply?.rewards) ? settleReply.rewards : []).map(normalizeCoreItem).filter(i => i.itemId > 0);
+    const settleRewards = settlementReward.length > 0 ? settlementReward : extraRewards;
+    const totalGold = toNum(settlement?.total_gold) || 0;
+    const balance = await getBagItemCount(QINGMEI_FRUIT_ITEM_ID).catch(() => 0);
+    const qingmei = qingmeiDtoFromReply(settleReply, ids, balance);
+
+    activityLogger.info('青梅酿分步结算完成（新协议）', {
+      event: 'qingmei_wine_settle',
+      shared: true,
+      totalGold,
+      settleRewardCount: settleRewards.length,
+    });
+
+    return {
+      ok: true,
+      settlement: {
+        mode: toNum(settlement?.settlement_mode) || QINGMEI_SHARED_SETTLEMENT_MODE,
+        totalGold: String(totalGold),
+      },
+      shared: true,
+      multiple: 2,
+      gold: totalGold,
+      rewards: settleRewards,
+      snapshot: { qingMei: qingmei },
+      qingmei,
+      message: settlement
+        ? `分享出售成功（1.5倍），获得 ${formatGold(totalGold)} 金币`
+        : '青梅酿已按分享奖励出售（1.5倍）',
+    };
+  });
 }
 
 function computeHeluDrawActions(drawInfo) {
@@ -1630,6 +2378,7 @@ async function getStarActivity() {
       starSandBalance: 0,
       passport: null,
       solarTerms: null,
+      qingmei: null,
       warning: 'runtime connection is not open',
     };
   }
@@ -1653,13 +2402,24 @@ async function getStarActivity() {
     }));
   } catch (err) {
     shopWarning = err?.message || String(err);
+    activityLogger.error('getStarActivity shopOperate failed', {
+      error: err?.message,
+      stack: err?.stack?.split('\n').slice(0, 5).join(' | '),
+    });
   }
 
   const currencyId = toNum(shopItems.find(item => item.currencyId > 0)?.currencyId) || STAR_SAND_ITEM_ID;
-  const [passport, solarTerms, starSandBalance] = await Promise.all([
+  const [passport, solarTerms, starSandBalance, qingmei] = await Promise.all([
     getSeasonPassport().catch(err => ({ title: '千星游记', warning: err?.message || String(err), claimableLevels: 0 })),
     getSolarTermsInfo().catch(err => ({ terms: [], claimableCount: 0, warning: err?.message || String(err) })),
     currencyId > 0 ? getBagItemCount(currencyId) : Promise.resolve(0),
+    getQingmeiActivity().catch(err => {
+      activityLogger.error('getQingmeiActivity failed in getStarActivity', {
+        error: err?.message,
+        stack: err?.stack?.split('\n').slice(0, 5).join(' | '),
+      });
+      return { warning: err?.message || String(err), claimed: false, claimable: false };
+    }),
   ]);
 
   return {
@@ -1680,6 +2440,7 @@ async function getStarActivity() {
     starSandBalance,
     passport,
     solarTerms,
+    qingmei,
     summary: {
       starCount: normalizeStarRecord(recordNode).totalCount,
       exchangeShopCount: shopItems.length,
@@ -2226,6 +2987,10 @@ module.exports = {
   getQingmeiActivity,
   claimQingmeiSeeds,
   brewAndSellQingmeiWine,
+  startQingmeiBrew,
+  continueQingmeiBrew,
+  autoBrewQingmei,
+  settleQingmeiBrew,
   getSeasonPassport,
   claimSeasonPassportRewards,
   getSolarTermsInfo,

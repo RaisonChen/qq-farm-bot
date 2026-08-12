@@ -232,7 +232,22 @@ async function sendMsg(serviceName, methodName, bodyBytes, callback) {
 }
 
 /** Promise 版发送 */
-function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000) {
+class GatewayError extends Error {
+    constructor(code, message) {
+        super(message || `gateway error code=${code}`);
+        this.name = 'GatewayError';
+        this.code = Number(code) || 0;
+    }
+}
+
+function sendMsgAsync(serviceName, methodName, bodyBytes, timeoutOrOptions) {
+    const useTimeout = typeof timeoutOrOptions === 'number' || timeoutOrOptions == null
+        ? (Number(timeoutOrOptions) || 20000)
+        : 20000;
+    const options = timeoutOrOptions && typeof timeoutOrOptions === 'object' ? timeoutOrOptions : null;
+    const expectedCodes = Array.isArray(options?.expectedErrorCodes)
+        ? options.expectedErrorCodes.map(c => Number(c)).filter(c => c > 0)
+        : [];
     return new Promise((resolve, reject) => {
         if (!ws || ws.readyState !== WebSocket.OPEN) {
             reject(new Error(`连接未打开: ${methodName}`));
@@ -248,7 +263,7 @@ function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000) {
         const timeoutKey = `request_timeout_${seq}`;
         let settled = false;
 
-        networkScheduler.setTimeoutTask(timeoutKey, timeout, () => {
+        networkScheduler.setTimeoutTask(timeoutKey, useTimeout, () => {
             if (settled) return;
             settled = true;
             pendingCallbacks.delete(seq);
@@ -260,8 +275,20 @@ function sendMsgAsync(serviceName, methodName, bodyBytes, timeout = 20000) {
             networkScheduler.clear(timeoutKey);
             if (settled) return;
             settled = true;
-            if (err) reject(err);
-            else resolve({ body, meta });
+            if (err) {
+                const errCode = Number(meta?.error_code || 0) || err?.code || 0;
+                if (errCode > 0 && expectedCodes.includes(errCode)) {
+                    resolve({ body: body || null, meta });
+                    return;
+                }
+                if (errCode > 0) {
+                    reject(new GatewayError(errCode, err?.message || `${serviceName}.${methodName} 错误: code=${errCode} ${meta?.error_message || ''}`));
+                    return;
+                }
+                reject(err);
+            } else {
+                resolve({ body, meta });
+            }
         }).then((sent) => {
             if (sent || settled) return;
             networkScheduler.clear(timeoutKey);
@@ -307,7 +334,8 @@ function handleMessage(data) {
             if (cb) {
                 pendingCallbacks.delete(clientSeqVal);
                 if (errorCode !== 0) {
-                    cb(new Error(`${meta.service_name}.${meta.method_name} 错误: code=${errorCode} ${meta.error_message || ''}`));
+                    const err = new GatewayError(errorCode, `${meta.service_name}.${meta.method_name} 错误: code=${errorCode} ${meta.error_message || ''}`);
+                    cb(err, null, meta);
                 } else {
                     cb(null, msg.body, meta);
                 }
@@ -849,6 +877,7 @@ function getAceStatus() {
 module.exports = {
     connect, reconnect, cleanup, stopNetwork, getWs, isConnected,
     sendMsg, sendMsgAsync,
+    GatewayError,
     getUserState,
     getWsErrorState,
     getAceStatus,
