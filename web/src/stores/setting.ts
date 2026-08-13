@@ -11,6 +11,9 @@ export interface AutomationConfig {
   task?: boolean
   star_passport_claim?: boolean
   star_record_claim?: boolean
+  qingmei_auto_claim_seed?: boolean
+  qingmei_auto_brew?: boolean
+  /** 旧版合并开关，仅用于兼容历史配置 */
   qingmei_auto_claim_brew?: boolean
   sell?: boolean
   fertilizer_gift?: boolean

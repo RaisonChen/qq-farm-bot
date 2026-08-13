@@ -346,13 +346,15 @@ function startStarActivityClaimTimer() {
     }, { preventOverlap: true });
 }
 
-// ==================== 青梅活动自动酿造 ====================
+// ==================== 青梅活动自动任务 ====================
 
-async function runQingmeiAutoClaimAndBrew() {
+async function runQingmeiAutoTasks() {
     if (!loginReady || friendSyncPaused || qingmeiAutoRunning) return;
 
     const automation = getAutomation() || {};
-    if (automation.qingmei_auto_claim_brew !== true) return;
+    const autoClaimSeed = automation.qingmei_auto_claim_seed === true;
+    const autoBrew = automation.qingmei_auto_brew === true;
+    if (!autoClaimSeed && !autoBrew) return;
 
     qingmeiAutoRunning = true;
     try {
@@ -362,9 +364,9 @@ async function runQingmeiAutoClaimAndBrew() {
             getBagItemCount
         } = require('../services/activity');
 
-        // Step 1: claim daily Qingmei seeds
+        // Step 1: claim daily Qingmei seeds (independent switch)
         const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-        if (qingmeiSeedClaimedDate !== today) {
+        if (autoClaimSeed && qingmeiSeedClaimedDate !== today) {
             try {
                 const seedResult = await claimQingmeiSeeds();
                 if (seedResult?.ok && !seedResult.alreadyClaimed) {
@@ -400,7 +402,7 @@ async function runQingmeiAutoClaimAndBrew() {
                     });
                 }
             }
-        } else {
+        } else if (autoClaimSeed) {
             log('青梅', '青梅种子今日已领取，跳过', {
                 module: 'activity',
                 event: '青梅种子自动领取',
@@ -408,7 +410,8 @@ async function runQingmeiAutoClaimAndBrew() {
             });
         }
 
-        // Step 2: 循环酿造直到所有青梅果实消耗完
+        // Step 2: brew until all Qingmei fruits are consumed (independent switch)
+        if (!autoBrew) return;
         let totalConsumed = 0;
         let totalGold = 0;
         let brewRounds = 0;
@@ -475,20 +478,20 @@ async function runQingmeiAutoClaimAndBrew() {
     }
 }
 
-function stopQingmeiAutoClaimAndBrewTimer() {
+function stopQingmeiAutoTaskTimer() {
     workerScheduler.clear('qingmei_auto_initial');
     workerScheduler.clear('qingmei_auto_interval');
     workerScheduler.clear('qingmei_auto_after_save');
     qingmeiAutoRunning = false;
 }
 
-function startQingmeiAutoClaimAndBrewTimer() {
-    stopQingmeiAutoClaimAndBrewTimer();
+function startQingmeiAutoTaskTimer() {
+    stopQingmeiAutoTaskTimer();
     workerScheduler.setTimeoutTask('qingmei_auto_initial', 15000, () => {
-        runQingmeiAutoClaimAndBrew().catch(() => null);
+        runQingmeiAutoTasks().catch(() => null);
     });
     workerScheduler.setIntervalTask('qingmei_auto_interval', 5 * 60 * 1000, () => {
-        runQingmeiAutoClaimAndBrew().catch(() => null);
+        runQingmeiAutoTasks().catch(() => null);
     }, { preventOverlap: true });
 }
 
@@ -752,10 +755,13 @@ function applyRuntimeConfig(config, syncStatusAfter = false) {
                 });
             }
 
-            const qingmeiAutoBecameEnabled = !prevAuto?.qingmei_auto_claim_brew && newAuto?.qingmei_auto_claim_brew;
+            const qingmeiAutoBecameEnabled = (
+                (!prevAuto?.qingmei_auto_claim_seed && newAuto?.qingmei_auto_claim_seed) ||
+                (!prevAuto?.qingmei_auto_brew && newAuto?.qingmei_auto_brew)
+            );
             if (qingmeiAutoBecameEnabled) {
                 workerScheduler.setTimeoutTask('qingmei_auto_after_save', 2000, () => {
-                    runQingmeiAutoClaimAndBrew().catch(() => null);
+                    runQingmeiAutoTasks().catch(() => null);
                 });
             }
 
@@ -989,7 +995,7 @@ async function startBot(config) {
         // 启动每日定时器
         startDailyRoutineTimer();
         startStarActivityClaimTimer();
-        startQingmeiAutoClaimAndBrewTimer();
+        startQingmeiAutoTaskTimer();
         startMysteryShopAutoBuyTimer();
 
         syncStatus();
@@ -1036,7 +1042,7 @@ async function stopBot() {
     stopFriendCheckLoop();
     stopDailyRoutineTimer();
     stopStarActivityClaimTimer();
-    stopQingmeiAutoClaimAndBrewTimer();
+    stopQingmeiAutoTaskTimer();
     cleanupTaskSystem();
     workerScheduler.clearAll();
     stopNetwork('账号停止');
