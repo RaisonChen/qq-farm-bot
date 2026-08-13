@@ -207,6 +207,7 @@ let lastDailyRunDate = '';
 let friendSyncPaused = false;
 let starActivityClaimRunning = false;
 let qingmeiAutoRunning = false;
+let qingmeiSeedClaimedDate = '';
 
 const workerScheduler = createScheduler('worker');
 
@@ -362,31 +363,49 @@ async function runQingmeiAutoClaimAndBrew() {
         } = require('../services/activity');
 
         // Step 1: claim daily Qingmei seeds
-        try {
-            const seedResult = await claimQingmeiSeeds();
-            if (seedResult?.ok && !seedResult.alreadyClaimed) {
-                log('青梅', `自动领取青梅种子成功：获得 ${seedResult.claimedCount || 0} 个种子`, {
-                    module: 'activity',
-                    event: '青梅种子自动领取',
-                    result: 'success',
-                    claimedCount: seedResult.claimedCount || 0
-                });
+        const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+        if (qingmeiSeedClaimedDate !== today) {
+            try {
+                const seedResult = await claimQingmeiSeeds();
+                if (seedResult?.ok && !seedResult.alreadyClaimed) {
+                    qingmeiSeedClaimedDate = today;
+                    log('青梅', `自动领取青梅种子成功：获得 ${seedResult.claimedCount || 0} 个种子`, {
+                        module: 'activity',
+                        event: '青梅种子自动领取',
+                        result: 'success',
+                        claimedCount: seedResult.claimedCount || 0
+                    });
+                } else if (seedResult?.alreadyClaimed) {
+                    qingmeiSeedClaimedDate = today;
+                    log('青梅', '青梅种子今日已领取，跳过', {
+                        module: 'activity',
+                        event: '青梅种子自动领取',
+                        result: 'skipped'
+                    });
+                }
+            } catch (err) {
+                const msg = String(err?.message || err || '');
+                if (msg.includes('已经领取')) {
+                    qingmeiSeedClaimedDate = today;
+                    log('青梅', '青梅种子今日已领取，跳过', {
+                        module: 'activity',
+                        event: '青梅种子自动领取',
+                        result: 'skipped'
+                    });
+                } else {
+                    log('青梅', `自动领取青梅种子失败: ${msg}`, {
+                        module: 'activity',
+                        event: '青梅种子自动领取',
+                        result: 'error'
+                    });
+                }
             }
-        } catch (err) {
-            const msg = String(err?.message || err || '');
-            if (msg.includes('已经领取')) {
-                log('青梅', '青梅种子今日已领取，跳过', {
-                    module: 'activity',
-                    event: '青梅种子自动领取',
-                    result: 'skipped'
-                });
-            } else {
-                log('青梅', `自动领取青梅种子失败: ${msg}`, {
-                    module: 'activity',
-                    event: '青梅种子自动领取',
-                    result: 'error'
-                });
-            }
+        } else {
+            log('青梅', '青梅种子今日已领取，跳过', {
+                module: 'activity',
+                event: '青梅种子自动领取',
+                result: 'skipped'
+            });
         }
 
         // Step 2: 循环酿造直到所有青梅果实消耗完
