@@ -2987,6 +2987,7 @@ module.exports = {
   getQingmeiActivity,
   claimQingmeiSeeds,
   brewAndSellQingmeiWine,
+  getBagItemCount,
   startQingmeiBrew,
   continueQingmeiBrew,
   autoBrewQingmei,

@@ -77,6 +77,7 @@ function createAutomationSettings() {
       friend_help_exp_limit: false,
       star_passport_claim: false,
       star_record_claim: false,
+      qingmei_auto_claim_brew: false,
       golden_bug_clear: true,
       fertilizer_gift: false,
       fertilizer_buy_organic: false,

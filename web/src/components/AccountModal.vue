@@ -472,7 +472,7 @@ watch(activeTab, (tab) => {
             }"
             @click="activeTab = 'capture'"
           >
-            QQ抓包登录
+            QQ抓包
           </button>
         </div>
 

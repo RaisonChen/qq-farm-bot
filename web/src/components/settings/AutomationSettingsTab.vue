@@ -20,6 +20,7 @@ interface AutomationSettings {
     friend_help_exp_limit: boolean
     star_passport_claim: boolean
     star_record_claim: boolean
+    qingmei_auto_claim_brew: boolean
     golden_bug_clear: boolean
     fertilizer_gift: boolean
     fertilizer_buy_organic: boolean
@@ -182,6 +183,9 @@ const mysteryShopSettingsVisible = ref(false)
           </div>
           <div class="border border-gray-200 rounded-lg bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
             <BaseSwitch v-model="settings.automation.star_record_claim" label="自动领取观星礼录" />
+          </div>
+          <div class="border border-gray-200 rounded-lg bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
+            <BaseSwitch v-model="settings.automation.qingmei_auto_claim_brew" label="自动青梅酿造" />
           </div>
         </div>
       </div>

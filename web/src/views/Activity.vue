@@ -670,7 +670,7 @@ onMounted(() => {
 .start-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end}
 .start-controls label{display:flex;min-width:0;flex-direction:column;gap:4px;color:#64766b;font-size:11px}
 :global(.dark) .start-controls label{color:#a7bdb0}
-.count-control{display:grid;grid-template-columns:38px minmax(52px,1fr) 38px 50px;gap:5px}
+.count-control{display:grid;grid-template-columns:38px minmax(40px,1fr) 38px 44px;gap:5px}
 .count-control button,.start-controls input{height:36px;border:1px solid #9eb5a7;border-radius:6px}
 :global(.dark) .count-control button,:global(.dark) .start-controls input{border-color:#3c5a4a}
 .count-control button{display:grid;place-items:center;padding:0;color:#315244;background:#edf3e9}
@@ -679,6 +679,11 @@ onMounted(() => {
 .count-control .maximum-button{font-size:11px;font-weight:700}
 .start-controls input{width:100%;min-width:0;padding:0 6px;color:#173a2e;background:#fff;font-size:15px;text-align:center}
 :global(.dark) .start-controls input{color:#cfead9;background:#0e1f17}
+@media (max-width:420px){
+  .start-controls{grid-template-columns:1fr}
+  .start-controls .count-control{width:100%}
+  .start-controls :deep(.base-button){width:100%}
+}
 .quote-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
 .quote{height:78px;display:flex;min-width:0;flex-direction:column;align-items:center;justify-content:center;border:1px solid #b7c8b8;border-radius:6px;color:#436052;background:#f5f8ef;cursor:pointer}
 :global(.dark) .quote{border-color:#3c5a4a;color:#a8c4b3;background:#162820}

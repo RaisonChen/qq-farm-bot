@@ -212,6 +212,7 @@ const DEFAULT_AUTOMATION = {
     task: true,
     star_passport_claim: false,
     star_record_claim: false,
+    qingmei_auto_claim_brew: false,
     fertilizer_gift: false,
     fertilizer_buy_organic: false,
     fertilizer_buy_normal: false,
