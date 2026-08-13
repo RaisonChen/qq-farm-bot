@@ -109,17 +109,31 @@ function applyPlan(data: any) {
   exists.value = data?.exists === true
   enabled.value = data?.enabled !== false
   updatedAt.value = Number(data?.updatedAt) || 0
+  const strategyDefaults = createStrategySettings()
   strategySettings.value = {
-    ...createStrategySettings(),
-    ...config,
-    intervals: { ...createStrategySettings().intervals, ...(config.intervals || {}) },
-    friendQuietHours: { ...createStrategySettings().friendQuietHours, ...(config.friendQuietHours || {}) },
+    ...strategyDefaults,
+    plantingStrategy: config.plantingStrategy ?? strategyDefaults.plantingStrategy,
+    preferredSeedId: config.preferredSeedId ?? strategyDefaults.preferredSeedId,
+    prioritize2x2Crops: config.prioritize2x2Crops === true,
     bagSeedPriority: Array.isArray(config.bagSeedPriority) ? [...config.bagSeedPriority] : [],
+    bagSeedFallbackStrategy: config.bagSeedFallbackStrategy ?? strategyDefaults.bagSeedFallbackStrategy,
+    stealDelaySeconds: config.stealDelaySeconds ?? strategyDefaults.stealDelaySeconds,
+    plantOrderRandom: config.plantOrderRandom ?? strategyDefaults.plantOrderRandom,
+    plantDelaySeconds: config.plantDelaySeconds ?? strategyDefaults.plantDelaySeconds,
+    intervals: { ...strategyDefaults.intervals, ...(config.intervals || {}) },
+    friendQuietHours: { ...strategyDefaults.friendQuietHours, ...(config.friendQuietHours || {}) },
   }
   const automationDefaults = createAutomationSettings()
   automationSettings.value = {
     ...automationDefaults,
-    ...config,
+    autoAcceptFriendMinLevel: config.autoAcceptFriendMinLevel ?? automationDefaults.autoAcceptFriendMinLevel,
+    fertilizerBuyOrganicCount: config.fertilizerBuyOrganicCount ?? automationDefaults.fertilizerBuyOrganicCount,
+    fertilizerBuyOrganicThresholdHours: config.fertilizerBuyOrganicThresholdHours ?? automationDefaults.fertilizerBuyOrganicThresholdHours,
+    fertilizerBuyNormalCount: config.fertilizerBuyNormalCount ?? automationDefaults.fertilizerBuyNormalCount,
+    fertilizerBuyNormalThresholdHours: config.fertilizerBuyNormalThresholdHours ?? automationDefaults.fertilizerBuyNormalThresholdHours,
+    fertilizerBuyCheckIntervalMinutes: config.fertilizerBuyCheckIntervalMinutes ?? automationDefaults.fertilizerBuyCheckIntervalMinutes,
+    goldenBugKeepCount: config.goldenBugKeepCount ?? automationDefaults.goldenBugKeepCount,
+    goldenBugRoundLimit: config.goldenBugRoundLimit ?? automationDefaults.goldenBugRoundLimit,
     automation: { ...automationDefaults.automation, ...(config.automation || {}) },
   }
 }
@@ -144,8 +158,25 @@ const updatedAtLabel = computed(() => {
 
 function buildConfig() {
   return {
-    ...strategySettings.value,
-    ...automationSettings.value,
+    plantingStrategy: strategySettings.value.plantingStrategy,
+    preferredSeedId: strategySettings.value.preferredSeedId,
+    prioritize2x2Crops: strategySettings.value.prioritize2x2Crops,
+    bagSeedPriority: [...strategySettings.value.bagSeedPriority],
+    bagSeedFallbackStrategy: strategySettings.value.bagSeedFallbackStrategy,
+    stealDelaySeconds: strategySettings.value.stealDelaySeconds,
+    plantOrderRandom: strategySettings.value.plantOrderRandom,
+    plantDelaySeconds: strategySettings.value.plantDelaySeconds,
+    intervals: { ...strategySettings.value.intervals },
+    friendQuietHours: { ...strategySettings.value.friendQuietHours },
+    automation: { ...automationSettings.value.automation },
+    autoAcceptFriendMinLevel: automationSettings.value.autoAcceptFriendMinLevel,
+    fertilizerBuyOrganicCount: automationSettings.value.fertilizerBuyOrganicCount,
+    fertilizerBuyOrganicThresholdHours: automationSettings.value.fertilizerBuyOrganicThresholdHours,
+    fertilizerBuyNormalCount: automationSettings.value.fertilizerBuyNormalCount,
+    fertilizerBuyNormalThresholdHours: automationSettings.value.fertilizerBuyNormalThresholdHours,
+    fertilizerBuyCheckIntervalMinutes: automationSettings.value.fertilizerBuyCheckIntervalMinutes,
+    goldenBugKeepCount: automationSettings.value.goldenBugKeepCount,
+    goldenBugRoundLimit: automationSettings.value.goldenBugRoundLimit,
   }
 }
 
