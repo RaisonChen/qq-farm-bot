@@ -212,7 +212,10 @@ const DEFAULT_AUTOMATION = {
     task: true,
     star_passport_claim: false,
     star_record_claim: false,
+    // Legacy combined flag is retained for backward-compatible config loading.
     qingmei_auto_claim_brew: false,
+    qingmei_auto_claim_seed: false,
+    qingmei_auto_brew: false,
     fertilizer_gift: false,
     fertilizer_buy_organic: false,
     fertilizer_buy_normal: false,
@@ -428,8 +431,14 @@ function normalizeIntervals(raw) {
 // ==================== 配置克隆/合并 ====================
 
 function cloneAccountConfig(config = DEFAULT_ACCOUNT_CONFIG) {
-    const srcAuto = config && config.automation && typeof config.automation === 'object'
+    const rawAuto = config && config.automation && typeof config.automation === 'object'
         ? config.automation : {};
+    // Migrate the former combined switch only when the new fields were not explicitly set.
+    const srcAuto = { ...rawAuto };
+    if (srcAuto.qingmei_auto_claim_brew === true) {
+        if (srcAuto.qingmei_auto_claim_seed === undefined) srcAuto.qingmei_auto_claim_seed = true;
+        if (srcAuto.qingmei_auto_brew === undefined) srcAuto.qingmei_auto_brew = true;
+    }
     const auto = { ...DEFAULT_ACCOUNT_CONFIG.automation };
 
     for (const key of Object.keys(auto)) {
